@@ -141,10 +141,7 @@ pub fn apply_codex_model_catalog_mapping(
     mut body: Value,
     provider: &Provider,
 ) -> (Value, Option<String>, Option<String>) {
-    let original_model = body
-        .get("model")
-        .and_then(|m| m.as_str())
-        .map(String::from);
+    let original_model = body.get("model").and_then(|m| m.as_str()).map(String::from);
     let Some(original) = original_model
         .as_deref()
         .map(str::trim)
@@ -185,9 +182,7 @@ pub fn apply_codex_model_catalog_mapping(
 
         if display_name == original.as_str() {
             if actual_model != original.as_str() {
-                log::debug!(
-                    "[ModelMapper] Codex 模型显示名映射: {original} → {actual_model}"
-                );
+                log::debug!("[ModelMapper] Codex 模型显示名映射: {original} → {actual_model}");
                 body["model"] = serde_json::json!(actual_model);
                 return (body, original_model, Some(actual_model.to_string()));
             }
