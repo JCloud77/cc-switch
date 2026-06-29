@@ -34,6 +34,8 @@ const CODEX_AGENT_USER_AGENT: &str =
     "codex_cli_rs/0.77.0 (Windows 10.0.26100; x86_64) WindowsTerminal";
 const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
 const STREAM_CHECK_SESSION_ID: &str = "cc-switch-stream-check";
+const DEFAULT_CLAUDE_AGENT_PROBE_MODEL: &str = "claude-opus-4-8";
+const DEFAULT_CODEX_AGENT_PROBE_MODEL: &str = "gpt-5.5";
 
 /// 健康状态枚举
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -772,27 +774,15 @@ impl StreamCheckService {
                     .and_then(Value::as_str)
             });
 
-        candidate
+        Ok(candidate
             .and_then(Self::normalize_model_candidate)
-            .ok_or_else(|| {
-                AppError::localized(
-                    "stream_check.model_missing",
-                    "缺少模型名，无法发送 agent 风格测试请求",
-                    "Model name is missing; cannot send an agent-style test request",
-                )
-            })
+            .unwrap_or_else(|| DEFAULT_CLAUDE_AGENT_PROBE_MODEL.to_string()))
     }
 
     fn resolve_codex_model(provider: &Provider) -> Result<String, AppError> {
-        crate::proxy::providers::codex_provider_upstream_model(provider)
+        Ok(crate::proxy::providers::codex_provider_upstream_model(provider)
             .and_then(|model| Self::normalize_model_candidate(&model))
-            .ok_or_else(|| {
-                AppError::localized(
-                    "stream_check.model_missing",
-                    "缺少模型名，无法发送 agent 风格测试请求",
-                    "Model name is missing; cannot send an agent-style test request",
-                )
-            })
+            .unwrap_or_else(|| DEFAULT_CODEX_AGENT_PROBE_MODEL.to_string()))
     }
 
     fn normalize_model_candidate(value: &str) -> Option<String> {
@@ -988,6 +978,24 @@ mod tests {
         assert_eq!(
             StreamCheckService::resolve_codex_model(&p).unwrap(),
             "deepseek-v4-pro"
+        );
+    }
+
+    #[test]
+    fn test_resolve_claude_model_defaults_to_agent_model() {
+        let p = make_provider(serde_json::json!({ "env": {} }));
+        assert_eq!(
+            StreamCheckService::resolve_claude_model(&p).unwrap(),
+            "claude-opus-4-8"
+        );
+    }
+
+    #[test]
+    fn test_resolve_codex_model_defaults_to_agent_model() {
+        let p = make_provider(serde_json::json!({}));
+        assert_eq!(
+            StreamCheckService::resolve_codex_model(&p).unwrap(),
+            "gpt-5.5"
         );
     }
 
