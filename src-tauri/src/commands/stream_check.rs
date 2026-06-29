@@ -1,7 +1,8 @@
 //! 供应商连通性检查命令
 //!
-//! 注意：本检查只探测 base_url 是否可达，不发真实大模型请求，也不触碰故障转移
-//! 熔断器（熔断器由真实转发流量驱动）。详见 `services::stream_check`。
+//! 注意：本检查先探测 base_url 可达性；Claude/Codex 供应商会继续发送极小的
+//! agent 风格真实请求。检查不触碰故障转移熔断器（熔断器由真实转发流量驱动）。
+//! 详见 `services::stream_check`。
 
 use crate::app_config::AppType;
 use crate::commands::copilot::CopilotAuthState;

@@ -1,30 +1,39 @@
 //! 供应商连通性检查服务（reachability）
 //!
-//! 仅探测供应商 `base_url` 是否可达，**不发送真实大模型请求**：
-//! - 收到任意 HTTP 响应（200/4xx/5xx）即判定"可达"（端口通、网关存活）；
+//! 先探测供应商 `base_url` 是否可达，再对 Claude / Codex 供应商发送极小的
+//! agent 风格真实请求：
+//! - base_url 探测阶段收到任意 HTTP 响应（200/4xx/5xx）即判定"可达"；
 //! - 仅 DNS / 连接被拒 / TLS / 超时等网络级错误判定"不可达"；
-//! - 延迟 = 收到响应头的耗时（TTFB，真实往返）。
+//! - Claude / Codex 会继续发送 `max_tokens/max_output_tokens = 1` 的最小请求，
+//!   以识别鉴权、模型名、UA/agent 限制等真实请求问题。
 //!
-//! ## 设计取舍：可达 ≠ 配置正确
+//! ## 设计取舍：可达 ≠ 可用
 //!
-//! 本检查刻意不验证鉴权或模型，因此不会被第三方供应商的鉴权拦截 / 模型校验
-//! 误判为"不可用"。代价是它无法告诉你鉴权对不对、模型存不存在。
+//! base_url 可达只说明端口和网关存活；agent 探测才验证当前 provider 配置是否能
+//! 通过类似 Claude Code / Codex 的真实请求。该请求可能产生极少量 token 费用。
 //!
 //! ## 与故障转移的关系（重要不变量）
 //!
-//! 连通性检查 **绝不** 触碰故障转移熔断器：一个返回 403/401 的供应商在本检查里
-//! 算"可达"，但它对真实流量是坏的。熔断器只由 `proxy/forwarder.rs` 转发真实流量
-//! 的成败驱动（被动）。两者职责分离——可达性回答"能不能到"，真实流量回答"能不能用"。
+//! 连通性检查 **绝不** 触碰故障转移熔断器：即使 agent 探测返回 403/401/5xx，
+//! 也只影响本次检测结果，不会把供应商标记进熔断状态。熔断器只由
+//! `proxy/forwarder.rs` 转发真实业务流量的成败驱动（被动）。
 
-use reqwest::header::HeaderValue;
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_ENCODING, CONTENT_TYPE, USER_AGENT};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::time::Instant;
 
 use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::provider::Provider;
-use crate::proxy::providers::{get_adapter, ClaudeAdapter, ProviderAdapter};
+use crate::proxy::providers::{get_adapter, AuthStrategy, ClaudeAdapter, ProviderAdapter};
+
+const CLAUDE_AGENT_USER_AGENT: &str = "claude-cli/2.1.161 (external, cli)";
+const CODEX_AGENT_USER_AGENT: &str =
+    "codex_cli_rs/0.77.0 (Windows 10.0.26100; x86_64) WindowsTerminal";
+const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
+const STREAM_CHECK_SESSION_ID: &str = "cc-switch-stream-check";
 
 /// 健康状态枚举
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -69,13 +78,26 @@ pub struct StreamCheckResult {
     pub message: String,
     pub response_time_ms: Option<u64>,
     pub http_status: Option<u16>,
-    /// 保留字段以兼容 `stream_check_logs` 表结构；连通性检查恒为空串。
+    /// Agent 探测实际使用的模型；仅 base_url 可达性检查时为空串。
     pub model_used: String,
     pub tested_at: i64,
     pub retry_count: u32,
-    /// 细粒度错误分类；连通性检查不再细分，恒为 None。
+    /// 细粒度错误分类；agent 探测失败时用于前端区分“base 可达但真实请求失败”。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_category: Option<String>,
+}
+
+struct AgentProbeRequest {
+    url: String,
+    headers: HeaderMap,
+    body: Value,
+    model: String,
+    probe_kind: &'static str,
+}
+
+struct AgentProbeResponse {
+    status: u16,
+    body_snippet: Option<String>,
 }
 
 /// 连通性检查服务
@@ -174,12 +196,39 @@ impl StreamCheckService {
         let timeout = std::time::Duration::from_secs(config.timeout_secs);
         let ua = Self::custom_user_agent(provider);
 
-        let result = Self::probe_reachability(&client, &base_url, timeout, ua).await;
+        let reachability = Self::probe_reachability(&client, &base_url, timeout, ua.clone()).await;
+        let reachability_status = reachability.as_ref().ok().copied();
         let response_time = start.elapsed().as_millis() as u64;
-        Ok(Self::build_result(
-            result,
+        let reachability_result = Self::build_result(
+            reachability,
             response_time,
             config.degraded_threshold_ms,
+        );
+
+        if !reachability_result.success {
+            return Ok(reachability_result);
+        }
+
+        let probe_request = match Self::build_agent_probe_request(app_type, provider, &base_url, ua)
+        {
+            Ok(Some(request)) => request,
+            Ok(None) => return Ok(reachability_result),
+            Err(err) => {
+                return Ok(Self::build_agent_config_failure_result(
+                    err,
+                    start.elapsed().as_millis() as u64,
+                    reachability_status,
+                ));
+            }
+        };
+
+        let probe_result = Self::probe_agent_request(&client, probe_request, timeout).await;
+        let response_time = start.elapsed().as_millis() as u64;
+        Ok(Self::build_agent_result(
+            probe_result,
+            response_time,
+            config.degraded_threshold_ms,
+            reachability_status,
         ))
     }
 
@@ -243,7 +292,7 @@ impl StreamCheckService {
         }
     }
 
-    /// 将探测原始结果包装成 `StreamCheckResult`。
+    /// 将 base_url 可达性探测原始结果包装成 `StreamCheckResult`。
     fn build_result(
         result: Result<u16, AppError>,
         response_time: u64,
@@ -276,6 +325,79 @@ impl StreamCheckService {
         }
     }
 
+    fn build_agent_config_failure_result(
+        error: AppError,
+        response_time: u64,
+        reachability_status: Option<u16>,
+    ) -> StreamCheckResult {
+        StreamCheckResult {
+            status: HealthStatus::Failed,
+            success: false,
+            message: format!("Reachable, but agent probe could not run: {error}"),
+            response_time_ms: Some(response_time),
+            http_status: reachability_status,
+            model_used: String::new(),
+            tested_at: chrono::Utc::now().timestamp(),
+            retry_count: 0,
+            error_category: Some("agent_probe_config".to_string()),
+        }
+    }
+
+    fn build_agent_result(
+        result: Result<(AgentProbeRequest, AgentProbeResponse), AppError>,
+        response_time: u64,
+        degraded_threshold_ms: u64,
+        reachability_status: Option<u16>,
+    ) -> StreamCheckResult {
+        let tested_at = chrono::Utc::now().timestamp();
+        match result {
+            Ok((request, response)) if (200..300).contains(&response.status) => StreamCheckResult {
+                status: Self::determine_status(response_time, degraded_threshold_ms),
+                success: true,
+                message: format!("Reachable; {} agent probe succeeded", request.probe_kind),
+                response_time_ms: Some(response_time),
+                http_status: Some(response.status),
+                model_used: request.model,
+                tested_at,
+                retry_count: 0,
+                error_category: None,
+            },
+            Ok((request, response)) => {
+                let (category, reason) = Self::classify_agent_http_failure(
+                    response.status,
+                    response.body_snippet.as_deref(),
+                );
+                StreamCheckResult {
+                    status: HealthStatus::Failed,
+                    success: false,
+                    message: Self::format_agent_http_failure(
+                        request.probe_kind,
+                        response.status,
+                        &reason,
+                        response.body_snippet.as_deref(),
+                    ),
+                    response_time_ms: Some(response_time),
+                    http_status: Some(response.status),
+                    model_used: request.model,
+                    tested_at,
+                    retry_count: 0,
+                    error_category: Some(category.to_string()),
+                }
+            }
+            Err(e) => StreamCheckResult {
+                status: HealthStatus::Failed,
+                success: false,
+                message: format!("Reachable, but agent probe failed: {e}"),
+                response_time_ms: Some(response_time),
+                http_status: reachability_status,
+                model_used: String::new(),
+                tested_at,
+                retry_count: 0,
+                error_category: Some("agent_probe_network".to_string()),
+            },
+        }
+    }
+
     fn determine_status(latency_ms: u64, threshold: u64) -> HealthStatus {
         if latency_ms <= threshold {
             HealthStatus::Operational
@@ -299,6 +421,318 @@ impl StreamCheckService {
         }
     }
 
+    fn build_agent_probe_request(
+        app_type: &AppType,
+        provider: &Provider,
+        base_url: &str,
+        custom_ua: Option<HeaderValue>,
+    ) -> Result<Option<AgentProbeRequest>, AppError> {
+        match app_type {
+            AppType::Claude => Self::build_claude_agent_probe(provider, base_url, custom_ua),
+            AppType::Codex => {
+                Self::build_codex_agent_probe(provider, base_url, custom_ua).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn build_claude_agent_probe(
+        provider: &Provider,
+        base_url: &str,
+        custom_ua: Option<HeaderValue>,
+    ) -> Result<Option<AgentProbeRequest>, AppError> {
+        use crate::proxy::providers::{
+            claude_api_format_needs_transform, get_claude_api_format,
+            transform_claude_request_for_api_format,
+        };
+
+        let adapter = ClaudeAdapter::new();
+        let auth = adapter.extract_auth(provider).ok_or_else(|| {
+            AppError::localized(
+                "stream_check.auth_missing",
+                "缺少 API Key，无法发送 agent 风格测试请求",
+                "API key is missing; cannot send an agent-style test request",
+            )
+        })?;
+        if matches!(auth.strategy, AuthStrategy::GitHubCopilot | AuthStrategy::CodexOAuth) {
+            // 这两类供应商需要命令层的 OAuth 管理器动态换 token；当前连通检测保持原有
+            // base_url 可达性语义，避免用占位 token 产生误报。
+            return Ok(None);
+        }
+
+        let requested_model = Self::resolve_claude_model(provider)?;
+        let mut body = json!({
+            "model": requested_model,
+            "max_tokens": 1,
+            "stream": false,
+            "metadata": {
+                "user_id": format!("cc-switch_session_{STREAM_CHECK_SESSION_ID}")
+            },
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": "ping" }
+                    ]
+                }
+            ]
+        });
+
+        let api_format = get_claude_api_format(provider);
+        let endpoint = if claude_api_format_needs_transform(api_format) {
+            body = transform_claude_request_for_api_format(
+                body,
+                provider,
+                api_format,
+                Some(STREAM_CHECK_SESSION_ID),
+                None,
+            )
+            .map_err(|e| AppError::Message(format!("Failed to transform Claude probe: {e}")))?;
+            match api_format {
+                "openai_responses" => "/v1/responses".to_string(),
+                "gemini_native" => {
+                    let model =
+                        crate::proxy::providers::transform_gemini::extract_gemini_model(&body)
+                            .map(crate::proxy::gemini_url::normalize_gemini_model_id)
+                            .unwrap_or("unknown");
+                    format!("/v1beta/models/{model}:generateContent")
+                }
+                _ => "/v1/chat/completions".to_string(),
+            }
+        } else {
+            "/v1/messages".to_string()
+        };
+
+        let model = body
+            .get("model")
+            .and_then(Value::as_str)
+            .map(|model| {
+                if api_format == "gemini_native" {
+                    crate::proxy::gemini_url::normalize_gemini_model_id(model).to_string()
+                } else {
+                    model.to_string()
+                }
+            })
+            .unwrap_or_default();
+
+        let url = if api_format == "gemini_native" {
+            crate::proxy::gemini_url::resolve_gemini_native_url(
+                base_url,
+                &endpoint,
+                Self::is_full_url(provider),
+            )
+        } else if Self::is_full_url(provider) {
+            base_url.to_string()
+        } else {
+            adapter.build_url(base_url, &endpoint)
+        };
+        let mut headers = Self::auth_headers(&adapter, &auth)?;
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+        if api_format == "anthropic" {
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+            headers.insert("anthropic-beta", HeaderValue::from_static(CLAUDE_CODE_BETA));
+        }
+        headers.insert(
+            USER_AGENT,
+            custom_ua.unwrap_or_else(|| HeaderValue::from_static(CLAUDE_AGENT_USER_AGENT)),
+        );
+
+        Ok(Some(AgentProbeRequest {
+            url,
+            headers,
+            body,
+            model,
+            probe_kind: "Claude Code",
+        }))
+    }
+
+    fn build_codex_agent_probe(
+        provider: &Provider,
+        base_url: &str,
+        custom_ua: Option<HeaderValue>,
+    ) -> Result<AgentProbeRequest, AppError> {
+        use crate::proxy::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning;
+
+        let adapter = crate::proxy::providers::CodexAdapter::new();
+        let auth = adapter.extract_auth(provider).ok_or_else(|| {
+            AppError::localized(
+                "stream_check.auth_missing",
+                "缺少 API Key，无法发送 agent 风格测试请求",
+                "API key is missing; cannot send an agent-style test request",
+            )
+        })?;
+        let model = Self::resolve_codex_model(provider)?;
+        let mut body = json!({
+            "model": model,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "input_text", "text": "ping" }
+                    ]
+                }
+            ],
+            "max_output_tokens": 1,
+            "stream": false,
+            "store": false
+        });
+
+        let endpoint = if crate::proxy::providers::should_convert_codex_responses_to_chat(
+            provider,
+            "/responses",
+        ) {
+            crate::proxy::providers::apply_codex_chat_upstream_model(provider, &mut body);
+            let reasoning =
+                crate::proxy::providers::resolve_codex_chat_reasoning_config(provider, &body);
+            body = responses_to_chat_completions_with_reasoning(body, reasoning.as_ref())
+                .map_err(|e| AppError::Message(format!("Failed to transform Codex probe: {e}")))?;
+            "/chat/completions"
+        } else {
+            "/responses"
+        };
+        let model = body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let url = if Self::is_full_url(provider) {
+            base_url.to_string()
+        } else {
+            adapter.build_url(base_url, endpoint)
+        };
+        let mut headers = Self::auth_headers(&adapter, &auth)?;
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+        headers.insert(
+            USER_AGENT,
+            custom_ua.unwrap_or_else(|| HeaderValue::from_static(CODEX_AGENT_USER_AGENT)),
+        );
+
+        Ok(AgentProbeRequest {
+            url,
+            headers,
+            body,
+            model,
+            probe_kind: "Codex",
+        })
+    }
+
+    async fn probe_agent_request(
+        client: &Client,
+        request: AgentProbeRequest,
+        timeout: std::time::Duration,
+    ) -> Result<(AgentProbeRequest, AgentProbeResponse), AppError> {
+        let response = client
+            .post(&request.url)
+            .timeout(timeout)
+            .headers(request.headers.clone())
+            .json(&request.body)
+            .send()
+            .await
+            .map_err(Self::map_request_error)?;
+
+        let status = response.status().as_u16();
+        let body_snippet = response
+            .text()
+            .await
+            .ok()
+            .and_then(|body| Self::truncate_response_body(&body));
+
+        Ok((request, AgentProbeResponse { status, body_snippet }))
+    }
+
+    fn auth_headers(
+        adapter: &dyn ProviderAdapter,
+        auth: &crate::proxy::providers::AuthInfo,
+    ) -> Result<HeaderMap, AppError> {
+        let mut headers = HeaderMap::new();
+        for (name, value) in adapter
+            .get_auth_headers(auth)
+            .map_err(|e| AppError::Message(format!("Invalid auth header: {e}")))?
+        {
+            headers.append(name, value);
+        }
+        Ok(headers)
+    }
+
+    fn is_full_url(provider: &Provider) -> bool {
+        provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.is_full_url)
+            .unwrap_or(false)
+    }
+
+    fn truncate_response_body(body: &str) -> Option<String> {
+        let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        if compact.is_empty() {
+            return None;
+        }
+        const MAX: usize = 280;
+        if compact.chars().count() <= MAX {
+            Some(compact)
+        } else {
+            Some(format!("{}…", compact.chars().take(MAX).collect::<String>()))
+        }
+    }
+
+    fn classify_agent_http_failure(status: u16, body: Option<&str>) -> (&'static str, String) {
+        let lower = body.unwrap_or_default().to_ascii_lowercase();
+        match status {
+            400 => (
+                "agent_bad_request",
+                "invalid request, unsupported parameter, or model mismatch".to_string(),
+            ),
+            401 => ("agent_auth_failed", "authentication failed".to_string()),
+            403 => {
+                let reason = if lower.contains("agent")
+                    || lower.contains("claude")
+                    || lower.contains("codex")
+                    || lower.contains("user-agent")
+                    || lower.contains("not allowed")
+                    || lower.contains("forbidden")
+                {
+                    "request rejected; possible agent/User-Agent restriction"
+                } else {
+                    "permission denied"
+                };
+                ("agent_forbidden", reason.to_string())
+            }
+            404 => (
+                "agent_not_found",
+                "endpoint or model was not found".to_string(),
+            ),
+            408 | 409 | 425 | 429 => (
+                "agent_rate_limited",
+                "rate limited or temporarily unavailable".to_string(),
+            ),
+            500..=599 => (
+                "agent_upstream_error",
+                "upstream returned a server error".to_string(),
+            ),
+            _ => ("agent_http_error", format!("HTTP {status}")),
+        }
+    }
+
+    fn format_agent_http_failure(
+        probe_kind: &str,
+        status: u16,
+        reason: &str,
+        body: Option<&str>,
+    ) -> String {
+        match body {
+            Some(body) => format!(
+                "Reachable, but {probe_kind} agent probe failed with HTTP {status}: {reason}. Response: {body}"
+            ),
+            None => format!(
+                "Reachable, but {probe_kind} agent probe failed with HTTP {status}: {reason}"
+            ),
+        }
+    }
+
     /// Provider 级自定义 User-Agent（`meta.customUserAgent`），与转发路径共用单一口径：
     /// trim、空串视为未设置、非法值静默忽略（返回 `None`）。
     fn custom_user_agent(provider: &Provider) -> Option<HeaderValue> {
@@ -306,6 +740,51 @@ impl StreamCheckService {
             .meta
             .as_ref()
             .and_then(|meta| meta.custom_user_agent_header().ok().flatten())
+    }
+
+    fn resolve_claude_model(provider: &Provider) -> Result<String, AppError> {
+        let candidate = provider
+            .settings_config
+            .get("env")
+            .and_then(|env| {
+                [
+                    "ANTHROPIC_MODEL",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                ]
+                .into_iter()
+                .find_map(|key| env.get(key).and_then(Value::as_str))
+            })
+            .or_else(|| provider.settings_config.get("model").and_then(Value::as_str));
+
+        candidate
+            .and_then(Self::normalize_model_candidate)
+            .ok_or_else(|| {
+                AppError::localized(
+                    "stream_check.model_missing",
+                    "缺少模型名，无法发送 agent 风格测试请求",
+                    "Model name is missing; cannot send an agent-style test request",
+                )
+            })
+    }
+
+    fn resolve_codex_model(provider: &Provider) -> Result<String, AppError> {
+        crate::proxy::providers::codex_provider_upstream_model(provider)
+            .and_then(|model| Self::normalize_model_candidate(&model))
+            .ok_or_else(|| {
+                AppError::localized(
+                    "stream_check.model_missing",
+                    "缺少模型名，无法发送 agent 风格测试请求",
+                    "Model name is missing; cannot send an agent-style test request",
+                )
+            })
+    }
+
+    fn normalize_model_candidate(value: &str) -> Option<String> {
+        let stripped = crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(value);
+        let trimmed = stripped.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
     }
 
     // ===== 各应用 base_url 提取（settings_config 结构互不相同）=====
@@ -472,6 +951,40 @@ mod tests {
         let r = StreamCheckService::build_result(Ok(200), 3000, 1500);
         assert!(r.success);
         assert_eq!(r.status, HealthStatus::Degraded);
+    }
+
+    #[test]
+    fn test_resolve_claude_model_from_provider_config() {
+        let p = make_provider(serde_json::json!({
+            "env": {
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "kimi-k2[1M]"
+            }
+        }));
+        assert_eq!(
+            StreamCheckService::resolve_claude_model(&p).unwrap(),
+            "kimi-k2"
+        );
+    }
+
+    #[test]
+    fn test_resolve_codex_model_from_toml() {
+        let p = make_provider(serde_json::json!({
+            "config": "model_provider = \"custom\"\nmodel = \"deepseek-v4-pro\"\n[model_providers.custom]\nbase_url = \"https://example.com/v1\"\n"
+        }));
+        assert_eq!(
+            StreamCheckService::resolve_codex_model(&p).unwrap(),
+            "deepseek-v4-pro"
+        );
+    }
+
+    #[test]
+    fn test_classify_agent_forbidden_mentions_agent_restriction() {
+        let (category, reason) = StreamCheckService::classify_agent_http_failure(
+            403,
+            Some("This endpoint is only allowed for Claude Code agents"),
+        );
+        assert_eq!(category, "agent_forbidden");
+        assert!(reason.contains("agent"));
     }
 
     #[test]

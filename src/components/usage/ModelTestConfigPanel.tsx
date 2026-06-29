@@ -85,13 +85,13 @@ export function ModelTestConfigPanel() {
         </Alert>
       )}
 
-      {/* 连通检测语义说明：可达 ≠ 配置正确 */}
+      {/* 连通检测语义说明：可达 ≠ 可用 */}
       <Alert>
         <Info className="h-4 w-4" />
         <AlertDescription>
           {t("streamCheck.connectivityNote", {
             defaultValue:
-              "连通检测仅探测供应商地址是否可达，不发送真实模型请求。收到任意响应即视为“可达”——这不代表鉴权或模型配置一定正确。",
+              "连通检测先探测供应商地址是否可达；Claude/Codex 会继续发送极小的 agent 风格真实请求，用于验证鉴权、模型名和客户端限制，可能产生极少量 token 费用。",
           })}
         </AlertDescription>
       </Alert>

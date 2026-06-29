@@ -10,9 +10,9 @@ import type { AppId } from "@/lib/api";
 /**
  * 供应商连通性检查。
  *
- * 只探测 base_url 是否可达（任何 HTTP 响应都算可达），不发真实大模型请求。
- * 刻意 **不** 重置故障转移熔断器——可达 ≠ 配置正确，一个端口通但鉴权废的供应商
- * 不应被误判为"健康"而切回线上。熔断器只由真实转发流量驱动（见 proxy/forwarder.rs）。
+ * 先探测 base_url 是否可达；Claude/Codex 会继续发送极小的 agent 风格真实请求。
+ * 刻意 **不** 重置故障转移熔断器——可达/测试通过都不应主动把供应商切回线上。
+ * 熔断器只由真实转发流量驱动（见 proxy/forwarder.rs）。
  */
 export function useStreamCheck(appId: AppId) {
   const { t } = useTranslation();
@@ -46,18 +46,30 @@ export function useStreamCheck(appId: AppId) {
             }),
           );
         } else {
-          // 仅当无法建立连接（DNS / 连接被拒 / TLS / 超时）才会到这里
+          const isAgentProbeFailure =
+            result.errorCategory?.startsWith("agent_");
           toast.error(
-            t("streamCheck.unreachable", {
-              providerName: providerName,
-              message: result.message,
-              defaultValue: `${providerName} 无法连通: ${result.message}`,
-            }),
+            t(
+              isAgentProbeFailure
+                ? "streamCheck.agentProbeFailed"
+                : "streamCheck.unreachable",
+              {
+                providerName: providerName,
+                message: result.message,
+                defaultValue: `${providerName} 检测未通过: ${result.message}`,
+              },
+            ),
             {
-              description: t("streamCheck.unreachableHint", {
-                defaultValue:
-                  "无法建立连接（DNS / 连接 / TLS / 超时）。请检查 base_url 与网络。",
-              }),
+              description: t(
+                isAgentProbeFailure
+                  ? "streamCheck.agentProbeHint"
+                  : "streamCheck.unreachableHint",
+                {
+                  defaultValue: isAgentProbeFailure
+                    ? "Base URL 可达，但模拟 Claude/Codex agent 的最小真实请求失败。请检查 API Key、模型名、协议格式或供应商客户端限制。"
+                    : "无法建立连接（DNS / 连接 / TLS / 超时）。请检查 base_url 与网络。",
+                },
+              ),
               duration: 8000,
               closeButton: true,
             },

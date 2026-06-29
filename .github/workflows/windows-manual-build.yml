@@ -1,0 +1,123 @@
+name: Windows Manual Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_checks:
+        description: "Run fmt, clippy, tests, typecheck before building"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-manual-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Build Windows x64 executable
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.12.3
+          run_install: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: pwsh
+        run: |
+          $store = pnpm store path --silent
+          "path=$store" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Cache pnpm store
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-pnpm-store-
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript type check
+        if: inputs.run_checks
+        run: pnpm typecheck
+
+      - name: Check frontend formatting
+        if: inputs.run_checks
+        run: pnpm format:check
+
+      - name: Unit tests
+        if: inputs.run_checks
+        run: pnpm test:unit
+
+      - name: Create frontend dist placeholder for Rust checks
+        if: inputs.run_checks
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+      - name: Check Rust formatting
+        if: inputs.run_checks
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy
+        if: inputs.run_checks
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Run Rust tests
+        if: inputs.run_checks
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build Tauri executable without bundling
+        run: pnpm tauri build --no-bundle
+
+      - name: Write artifact notes
+        shell: pwsh
+        run: |
+          @"
+          CC Switch Windows x64 manual build
+          Ref: $env:GITHUB_REF
+          Commit: $env:GITHUB_SHA
+
+          Artifact contains the raw Tauri executable built on a Windows runner.
+          Before replacing a local install, close CC Switch and back up the user data directory:
+          C:\Users\yun\.cc-switch
+          "@ | Out-File -FilePath src-tauri/target/release/ARTIFACT_NOTES.txt -Encoding utf8
+
+      - name: Upload Windows executable artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: cc-switch-windows-x64-exe-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/cc-switch.exe
+            src-tauri/target/release/ARTIFACT_NOTES.txt

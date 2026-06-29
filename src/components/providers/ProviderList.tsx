@@ -198,7 +198,7 @@ export function ProviderList({
     refetchInterval: appId === "claude-desktop" ? 5000 : false,
   });
 
-  // 连通性检查不发真实请求、无封号/计费风险，直接执行（无需确认弹窗）。
+  // 连通性检查会对 Claude/Codex 发送极小 agent 风格真实请求；按用户要求沿用原按钮直接执行。
   const handleTest = useCallback(
     (provider: Provider) => {
       checkProvider(provider.id, provider.name);
