@@ -780,9 +780,11 @@ impl StreamCheckService {
     }
 
     fn resolve_codex_model(provider: &Provider) -> Result<String, AppError> {
-        Ok(crate::proxy::providers::codex_provider_upstream_model(provider)
-            .and_then(|model| Self::normalize_model_candidate(&model))
-            .unwrap_or_else(|| DEFAULT_CODEX_AGENT_PROBE_MODEL.to_string()))
+        Ok(
+            crate::proxy::providers::codex_provider_upstream_model(provider)
+                .and_then(|model| Self::normalize_model_candidate(&model))
+                .unwrap_or_else(|| DEFAULT_CODEX_AGENT_PROBE_MODEL.to_string()),
+        )
     }
 
     fn normalize_model_candidate(value: &str) -> Option<String> {
