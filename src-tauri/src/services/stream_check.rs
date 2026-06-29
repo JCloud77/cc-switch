@@ -199,11 +199,8 @@ impl StreamCheckService {
         let reachability = Self::probe_reachability(&client, &base_url, timeout, ua.clone()).await;
         let reachability_status = reachability.as_ref().ok().copied();
         let response_time = start.elapsed().as_millis() as u64;
-        let reachability_result = Self::build_result(
-            reachability,
-            response_time,
-            config.degraded_threshold_ms,
-        );
+        let reachability_result =
+            Self::build_result(reachability, response_time, config.degraded_threshold_ms);
 
         if !reachability_result.success {
             return Ok(reachability_result);
@@ -454,7 +451,10 @@ impl StreamCheckService {
                 "API key is missing; cannot send an agent-style test request",
             )
         })?;
-        if matches!(auth.strategy, AuthStrategy::GitHubCopilot | AuthStrategy::CodexOAuth) {
+        if matches!(
+            auth.strategy,
+            AuthStrategy::GitHubCopilot | AuthStrategy::CodexOAuth
+        ) {
             // 这两类供应商需要命令层的 OAuth 管理器动态换 token；当前连通检测保持原有
             // base_url 可达性语义，避免用占位 token 产生误报。
             return Ok(None);
@@ -641,7 +641,13 @@ impl StreamCheckService {
             .ok()
             .and_then(|body| Self::truncate_response_body(&body));
 
-        Ok((request, AgentProbeResponse { status, body_snippet }))
+        Ok((
+            request,
+            AgentProbeResponse {
+                status,
+                body_snippet,
+            },
+        ))
     }
 
     fn auth_headers(
@@ -675,7 +681,10 @@ impl StreamCheckService {
         if compact.chars().count() <= MAX {
             Some(compact)
         } else {
-            Some(format!("{}…", compact.chars().take(MAX).collect::<String>()))
+            Some(format!(
+                "{}…",
+                compact.chars().take(MAX).collect::<String>()
+            ))
         }
     }
 
@@ -756,7 +765,12 @@ impl StreamCheckService {
                 .into_iter()
                 .find_map(|key| env.get(key).and_then(Value::as_str))
             })
-            .or_else(|| provider.settings_config.get("model").and_then(Value::as_str));
+            .or_else(|| {
+                provider
+                    .settings_config
+                    .get("model")
+                    .and_then(Value::as_str)
+            });
 
         candidate
             .and_then(Self::normalize_model_candidate)
