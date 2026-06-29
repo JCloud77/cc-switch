@@ -130,6 +130,84 @@ pub fn apply_model_mapping(
     (body, original_model, None)
 }
 
+/// 对 Codex provider 的 `modelCatalog` 菜单显示名应用本地代理映射。
+///
+/// Codex CLI 会读取 CC Switch 生成的 model catalog，因此它通常直接发送
+/// `modelCatalog.models[].model`（真实上游模型）。但 pi 等直接走本地 Codex
+/// 代理的 API 客户端不会读取这个 catalog，可能发送的是用户看到/选择的
+/// `displayName`（例如 `gpt-5.5`）。这里在代理层把 displayName 映射回真实
+/// `model`，让 Codex 模型映射对非 Codex CLI 客户端也生效。
+pub fn apply_codex_model_catalog_mapping(
+    mut body: Value,
+    provider: &Provider,
+) -> (Value, Option<String>, Option<String>) {
+    let original_model = body
+        .get("model")
+        .and_then(|m| m.as_str())
+        .map(String::from);
+    let Some(original) = original_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+    else {
+        return (body, original_model, None);
+    };
+
+    let Some(models) = provider
+        .settings_config
+        .get("modelCatalog")
+        .and_then(|catalog| catalog.get("models"))
+        .and_then(|models| models.as_array())
+    else {
+        return (body, original_model, None);
+    };
+
+    let mut case_insensitive_match: Option<String> = None;
+    for entry in models {
+        let Some(actual_model) = entry
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        else {
+            continue;
+        };
+        let Some(display_name) = entry
+            .get("displayName")
+            .or_else(|| entry.get("display_name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            continue;
+        };
+
+        if display_name == original.as_str() {
+            if actual_model != original.as_str() {
+                log::debug!(
+                    "[ModelMapper] Codex 模型显示名映射: {original} → {actual_model}"
+                );
+                body["model"] = serde_json::json!(actual_model);
+                return (body, original_model, Some(actual_model.to_string()));
+            }
+            return (body, original_model, None);
+        }
+
+        if case_insensitive_match.is_none() && display_name.eq_ignore_ascii_case(&original) {
+            case_insensitive_match = Some(actual_model.to_string());
+        }
+    }
+
+    if let Some(mapped) = case_insensitive_match.filter(|mapped| mapped != &original) {
+        log::debug!("[ModelMapper] Codex 模型显示名映射: {original} → {mapped}");
+        body["model"] = serde_json::json!(mapped);
+        return (body, original_model, Some(mapped));
+    }
+
+    (body, original_model, None)
+}
+
 /// Claude Code 通过 `[1M]` 后缀声明 100 万上下文能力；上游 API
 /// 通常不接受这个本地能力标记，转发前需要剥离。
 pub fn strip_one_m_suffix_for_upstream(model: &str) -> &str {
@@ -202,6 +280,58 @@ mod tests {
             icon_color: None,
             in_failover_queue: false,
         }
+    }
+
+    fn create_codex_provider_with_catalog() -> Provider {
+        Provider {
+            id: "codex".to_string(),
+            name: "Codex".to_string(),
+            settings_config: json!({
+                "modelCatalog": {
+                    "models": [
+                        {"model": "deepseek-v4-pro", "displayName": "gpt-5.5"}
+                    ]
+                }
+            }),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        }
+    }
+
+    #[test]
+    fn test_codex_catalog_maps_display_name_to_actual_model() {
+        let provider = create_codex_provider_with_catalog();
+        let body = json!({"model": "gpt-5.5"});
+        let (result, original, mapped) = apply_codex_model_catalog_mapping(body, &provider);
+        assert_eq!(result["model"], "deepseek-v4-pro");
+        assert_eq!(original, Some("gpt-5.5".to_string()));
+        assert_eq!(mapped, Some("deepseek-v4-pro".to_string()));
+    }
+
+    #[test]
+    fn test_codex_catalog_keeps_actual_model() {
+        let provider = create_codex_provider_with_catalog();
+        let body = json!({"model": "deepseek-v4-pro"});
+        let (result, original, mapped) = apply_codex_model_catalog_mapping(body, &provider);
+        assert_eq!(result["model"], "deepseek-v4-pro");
+        assert_eq!(original, Some("deepseek-v4-pro".to_string()));
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn test_codex_catalog_display_name_match_is_case_insensitive() {
+        let provider = create_codex_provider_with_catalog();
+        let body = json!({"model": "GPT-5.5"});
+        let (result, _, mapped) = apply_codex_model_catalog_mapping(body, &provider);
+        assert_eq!(result["model"], "deepseek-v4-pro");
+        assert_eq!(mapped, Some("deepseek-v4-pro".to_string()));
     }
 
     #[test]
