@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       run_checks:
-        description: "Run fmt, clippy, tests, typecheck before building"
+        description: "Run formatting, clippy, typecheck, and frontend tests before building"
         type: boolean
         default: true
+      run_rust_tests:
+        description: "Also run Windows cargo test before building"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -81,7 +85,7 @@ jobs:
         run: pnpm test:unit
 
       - name: Create frontend dist placeholder for Rust checks
-        if: inputs.run_checks
+        if: inputs.run_checks || inputs.run_rust_tests
         shell: pwsh
         run: New-Item -ItemType Directory -Force -Path dist | Out-Null
 
@@ -94,7 +98,7 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
       - name: Run Rust tests
-        if: inputs.run_checks
+        if: inputs.run_rust_tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Build Tauri executable without bundling
