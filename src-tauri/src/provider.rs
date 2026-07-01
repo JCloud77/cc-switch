@@ -415,7 +415,7 @@ pub struct ApiKeyEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
     /// 备用 API Key 列表（支持多 Key 手动切换）
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, rename = "apiKeys", skip_serializing_if = "Vec::is_empty")]
     pub api_keys: Vec<ApiKeyEntry>,
     /// 当前选中的 Key ID（对应 api_keys 中的某个 id）
     #[serde(rename = "selectedKeyId", skip_serializing_if = "Option::is_none")]
