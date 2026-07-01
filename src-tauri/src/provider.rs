@@ -418,10 +418,7 @@ pub struct ProviderMeta {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub api_keys: Vec<ApiKeyEntry>,
     /// 当前选中的 Key ID（对应 api_keys 中的某个 id）
-    #[serde(
-        rename = "selectedKeyId",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "selectedKeyId", skip_serializing_if = "Option::is_none")]
     pub selected_key_id: Option<String>,
     /// 自定义端点列表（按 URL 去重存储）
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
