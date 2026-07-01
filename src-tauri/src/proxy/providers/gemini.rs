@@ -193,6 +193,24 @@ impl ProviderAdapter for GeminiAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        // 多 Key 管理：优先使用 meta 中选中的 Key
+        if let Some(meta) = provider.meta.as_ref() {
+            if let Some((selected_key, strategy_str)) = meta.resolve_selected_key() {
+                let strategy = strategy_str
+                    .and_then(super::auth_strategy_from_str)
+                    .unwrap_or(AuthStrategy::Google);
+                if strategy == AuthStrategy::GoogleOAuth {
+                    if let Some(creds) = self.parse_oauth_credentials(selected_key) {
+                        return Some(AuthInfo::with_access_token(
+                            selected_key.to_string(),
+                            creds.access_token,
+                        ));
+                    }
+                }
+                return Some(AuthInfo::new(selected_key.to_string(), strategy));
+            }
+        }
+
         let key = self.extract_key_raw(provider)?;
         let strategy = self.detect_auth_type(provider);
 

@@ -527,6 +527,16 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        // 多 Key 管理：优先使用 meta 中选中的 Key
+        if let Some(meta) = provider.meta.as_ref() {
+            if let Some((selected_key, strategy_str)) = meta.resolve_selected_key() {
+                let strategy = strategy_str
+                    .and_then(super::auth_strategy_from_str)
+                    .unwrap_or(AuthStrategy::Bearer);
+                return Some(AuthInfo::new(selected_key.to_string(), strategy));
+            }
+        }
+
         self.extract_key(provider)
             .map(|key| AuthInfo::new(key, AuthStrategy::Bearer))
     }

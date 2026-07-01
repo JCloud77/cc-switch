@@ -15,6 +15,7 @@ import {
 import { providersApi, settingsApi, type AppId } from "@/lib/api";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import type {
+  ApiKeyEntry,
   ProviderCategory,
   ProviderMeta,
   ProviderTestConfig,
@@ -78,6 +79,7 @@ import { ClaudeDesktopProviderForm } from "./ClaudeDesktopProviderForm";
 import { CodexFormFields } from "./CodexFormFields";
 import { GeminiFormFields } from "./GeminiFormFields";
 import { OmoFormFields } from "./OmoFormFields";
+import { ApiKeyManagerSection } from "./shared/ApiKeyManagerSection";
 import { parseOmoOtherFieldsObject } from "@/types/omo";
 import {
   ProviderAdvancedConfig,
@@ -328,6 +330,12 @@ function ProviderFormFull({
 
   const [testConfig, setTestConfig] = useState<ProviderTestConfig>(
     () => initialData?.meta?.testConfig ?? { enabled: false },
+  );
+  const [apiKeys, setApiKeys] = useState<ApiKeyEntry[]>(
+    () => initialData?.meta?.apiKeys ?? [],
+  );
+  const [selectedKeyId, setSelectedKeyId] = useState<string | undefined>(
+    () => initialData?.meta?.selectedKeyId,
   );
   const [pricingConfig, setPricingConfig] = useState<{
     enabled: boolean;
@@ -1440,6 +1448,8 @@ function ProviderFormFull({
 
     const nextMeta: ProviderMeta = {
       ...(baseMeta ?? {}),
+      apiKeys,
+      selectedKeyId,
       commonConfigEnabled:
         appId === "claude"
           ? useCommonConfig
@@ -2122,6 +2132,28 @@ function ProviderFormFull({
               onLocalProxyBodyOverrideChange={setLocalProxyBodyOverride}
             />
           )}
+          {appId === "claude" &&
+            shouldShowApiKey(form.getValues("settingsConfig"), isEditMode) &&
+            !(
+              templatePreset?.providerType === "github_copilot" ||
+              initialData?.meta?.providerType === "github_copilot" ||
+              baseUrl.includes("githubcopilot.com") ||
+              templatePreset?.providerType === "codex_oauth" ||
+              initialData?.meta?.providerType === "codex_oauth"
+            ) && (
+              <ApiKeyManagerSection
+                apiKeys={apiKeys}
+                selectedKeyId={selectedKeyId}
+                currentKeyValue={apiKey}
+                onApiKeysChange={setApiKeys}
+                onSelectedKeyIdChange={setSelectedKeyId}
+                newKeyStrategy={
+                  localApiKeyField === "ANTHROPIC_AUTH_TOKEN"
+                    ? "claude_auth"
+                    : "anthropic"
+                }
+              />
+            )}
 
           {appId === "codex" && (
             <CodexFormFields
@@ -2162,6 +2194,16 @@ function ProviderFormFull({
               onLocalProxyBodyOverrideChange={setLocalProxyBodyOverride}
             />
           )}
+          {appId === "codex" && (
+            <ApiKeyManagerSection
+              apiKeys={apiKeys}
+              selectedKeyId={selectedKeyId}
+              currentKeyValue={codexApiKey}
+              onApiKeysChange={setApiKeys}
+              onSelectedKeyIdChange={setSelectedKeyId}
+              newKeyStrategy="bearer"
+            />
+          )}
 
           {appId === "gemini" && (
             <GeminiFormFields
@@ -2189,6 +2231,16 @@ function ProviderFormFull({
               model={geminiModel}
               onModelChange={handleGeminiModelChange}
               speedTestEndpoints={speedTestEndpoints}
+            />
+          )}
+          {appId === "gemini" && (
+            <ApiKeyManagerSection
+              apiKeys={apiKeys}
+              selectedKeyId={selectedKeyId}
+              currentKeyValue={geminiApiKey}
+              onApiKeysChange={setApiKeys}
+              onSelectedKeyIdChange={setSelectedKeyId}
+              newKeyStrategy="google"
             />
           )}
 

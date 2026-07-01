@@ -397,9 +397,32 @@ impl LocalProxyRequestOverrides {
     }
 }
 
+/// 单个 API Key 记录（多 Key 管理使用）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKeyEntry {
+    /// 唯一标识
+    pub id: String,
+    /// 用户可读标签
+    pub label: String,
+    /// 实际 Key 值
+    pub key: String,
+    /// 认证策略
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+}
+
 /// 供应商元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
+    /// 备用 API Key 列表（支持多 Key 手动切换）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub api_keys: Vec<ApiKeyEntry>,
+    /// 当前选中的 Key ID（对应 api_keys 中的某个 id）
+    #[serde(
+        rename = "selectedKeyId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub selected_key_id: Option<String>,
     /// 自定义端点列表（按 URL 去重存储）
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub custom_endpoints: HashMap<String, crate::settings::CustomEndpoint>,
@@ -526,6 +549,15 @@ pub fn parse_custom_user_agent(
 }
 
 impl ProviderMeta {
+    /// 多 Key 管理：返回当前选中的 API Key 和策略。
+    /// 优先读取 `selected_key_id` 匹配 `api_keys` 中的条目；
+    /// 没有选中或没有匹配条目时返回 `None`，调用方应回退到原有的 settings_config 提取逻辑。
+    pub fn resolve_selected_key(&self) -> Option<(&str, Option<&str>)> {
+        let selected_id = self.selected_key_id.as_deref()?;
+        let entry = self.api_keys.iter().find(|e| e.id == selected_id)?;
+        Some((&entry.key, entry.strategy.as_deref()))
+    }
+
     /// Codex OAuth FAST mode 是否启用。默认关闭，因为 `service_tier="priority"`
     /// 会按更高速率消耗 ChatGPT 订阅配额，用户需显式开启以换取更低延迟。
     pub fn codex_fast_mode_enabled(&self) -> bool {

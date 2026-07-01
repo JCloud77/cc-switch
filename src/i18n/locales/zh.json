@@ -1133,7 +1133,11 @@
     "fetchModelsAuthFailed": "API Key 无效或无权限",
     "fetchModelsNotSupported": "该供应商不支持获取模型列表",
     "fetchModelsEndpointNotFound": "未找到可用的模型列表端点，请检查 Base URL 或确认供应商是否开放该接口",
-    "fetchModelsTimeout": "请求超时，请检查网络连接"
+    "fetchModelsTimeout": "请求超时，请检查网络连接",
+    "savedKeys": "备用 API Key",
+    "keyLabelPlaceholder": "标签（可选，例如: Key A - opus）",
+    "saveKey": "保存",
+    "noSavedKeysHint": "在上方输入 API Key 后，可点击「保存」将其存入 Key 列表，支持多个 Key 之间手动切换。"
   },
   "copilot": {
     "authSection": "GitHub Copilot 认证",

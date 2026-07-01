@@ -177,7 +177,18 @@ export interface LocalProxyRequestOverrides {
 }
 
 // 供应商元数据（字段名与后端一致，保持 snake_case）
+export interface ApiKeyEntry {
+  id: string;
+  label: string;
+  key: string;
+  strategy?: string;
+}
+
 export interface ProviderMeta {
+  // 备用 API Key 列表（支持多 Key 手动切换）
+  apiKeys?: ApiKeyEntry[];
+  // 当前选中的 Key ID
+  selectedKeyId?: string;
   // 自定义端点：以 URL 为键，值为端点信息
   custom_endpoints?: Record<string, CustomEndpoint>;
   // 是否在切换/同步到 live 时应用通用配置片段

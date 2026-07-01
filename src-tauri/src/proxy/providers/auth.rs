@@ -130,6 +130,18 @@ pub enum AuthStrategy {
     CodexOAuth,
 }
 
+/// 将多 Key 管理中存储的 strategy 字符串转换为 AuthStrategy
+pub fn auth_strategy_from_str(s: &str) -> Option<AuthStrategy> {
+    match s {
+        "anthropic" => Some(AuthStrategy::Anthropic),
+        "claude_auth" => Some(AuthStrategy::ClaudeAuth),
+        "bearer" => Some(AuthStrategy::Bearer),
+        "google" => Some(AuthStrategy::Google),
+        "google_oauth" => Some(AuthStrategy::GoogleOAuth),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

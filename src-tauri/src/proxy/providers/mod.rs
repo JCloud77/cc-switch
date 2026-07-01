@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 
 // 公开导出
 pub use adapter::ProviderAdapter;
-pub use auth::{AuthInfo, AuthStrategy};
+pub use auth::{auth_strategy_from_str, AuthInfo, AuthStrategy};
 pub use claude::{
     claude_api_format_needs_transform, get_claude_api_format,
     normalize_anthropic_messages_for_provider, transform_claude_request_for_api_format,
