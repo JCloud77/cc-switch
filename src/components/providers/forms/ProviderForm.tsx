@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -337,6 +337,9 @@ function ProviderFormFull({
   const [selectedKeyId, setSelectedKeyId] = useState<string | undefined>(
     () => initialData?.meta?.selectedKeyId,
   );
+  const lastAppliedManagedKeySignatureRef = useRef<string | undefined>(
+    undefined,
+  );
   const [pricingConfig, setPricingConfig] = useState<{
     enabled: boolean;
     costMultiplier?: string;
@@ -373,6 +376,9 @@ function ProviderFormFull({
       supportsFullUrl ? (initialData?.meta?.isFullUrl ?? false) : false,
     );
     setTestConfig(initialData?.meta?.testConfig ?? { enabled: false });
+    setApiKeys(initialData?.meta?.apiKeys ?? []);
+    setSelectedKeyId(initialData?.meta?.selectedKeyId);
+    lastAppliedManagedKeySignatureRef.current = undefined;
     setPricingConfig({
       enabled:
         initialData?.meta?.costMultiplier !== undefined ||
@@ -815,6 +821,89 @@ function ProviderFormFull({
     },
     [originalHandleGeminiModelChange, updateGeminiEnvField],
   );
+
+  const applyManagedApiKeyValue = useCallback(
+    (key: string) => {
+      if (appId === "claude") {
+        handleApiKeyChange(key);
+      } else if (appId === "codex") {
+        handleCodexApiKeyChange(key);
+      } else if (appId === "gemini") {
+        handleGeminiApiKeyChange(key);
+      }
+    },
+    [
+      appId,
+      handleApiKeyChange,
+      handleCodexApiKeyChange,
+      handleGeminiApiKeyChange,
+    ],
+  );
+
+  const handleSelectedApiKeyIdChange = useCallback(
+    (id: string | undefined) => {
+      setSelectedKeyId(id);
+
+      if (!id) {
+        applyManagedApiKeyValue("");
+        return;
+      }
+
+      const entry = apiKeys.find((key) => key.id === id);
+      if (entry) {
+        applyManagedApiKeyValue(entry.key);
+      }
+    },
+    [apiKeys, applyManagedApiKeyValue],
+  );
+
+  const clearSelectedApiKeyIfEdited = useCallback(
+    (nextKey: string) => {
+      const selectedEntry = selectedKeyId
+        ? apiKeys.find((key) => key.id === selectedKeyId)
+        : undefined;
+      if (selectedEntry && selectedEntry.key.trim() !== nextKey.trim()) {
+        setSelectedKeyId(undefined);
+      }
+    },
+    [apiKeys, selectedKeyId],
+  );
+
+  const handleClaudeApiKeyInputChange = useCallback(
+    (key: string) => {
+      handleApiKeyChange(key);
+      clearSelectedApiKeyIfEdited(key);
+    },
+    [clearSelectedApiKeyIfEdited, handleApiKeyChange],
+  );
+
+  const handleCodexApiKeyInputChange = useCallback(
+    (key: string) => {
+      handleCodexApiKeyChange(key);
+      clearSelectedApiKeyIfEdited(key);
+    },
+    [clearSelectedApiKeyIfEdited, handleCodexApiKeyChange],
+  );
+
+  const handleGeminiApiKeyInputChange = useCallback(
+    (key: string) => {
+      handleGeminiApiKeyChange(key);
+      clearSelectedApiKeyIfEdited(key);
+    },
+    [clearSelectedApiKeyIfEdited, handleGeminiApiKeyChange],
+  );
+
+  useEffect(() => {
+    if (!selectedKeyId) return;
+    const selectedEntry = apiKeys.find((key) => key.id === selectedKeyId);
+    if (!selectedEntry) return;
+
+    const signature = `${selectedEntry.id}:${selectedEntry.key}`;
+    if (lastAppliedManagedKeySignatureRef.current === signature) return;
+
+    lastAppliedManagedKeySignatureRef.current = signature;
+    applyManagedApiKeyValue(selectedEntry.key);
+  }, [apiKeys, applyManagedApiKeyValue, selectedKeyId]);
 
   const {
     useCommonConfig: useGeminiCommonConfigFlag,
@@ -2060,7 +2149,7 @@ function ProviderFormFull({
                 shouldShowApiKey(form.getValues("settingsConfig"), isEditMode)
               }
               apiKey={apiKey}
-              onApiKeyChange={handleApiKeyChange}
+              onApiKeyChange={handleClaudeApiKeyInputChange}
               category={category}
               shouldShowApiKeyLink={shouldShowClaudeApiKeyLink}
               websiteUrl={claudeWebsiteUrl}
@@ -2146,7 +2235,7 @@ function ProviderFormFull({
                 selectedKeyId={selectedKeyId}
                 currentKeyValue={apiKey}
                 onApiKeysChange={setApiKeys}
-                onSelectedKeyIdChange={setSelectedKeyId}
+                onSelectedKeyIdChange={handleSelectedApiKeyIdChange}
                 newKeyStrategy={
                   localApiKeyField === "ANTHROPIC_AUTH_TOKEN"
                     ? "claude_auth"
@@ -2159,7 +2248,7 @@ function ProviderFormFull({
             <CodexFormFields
               providerId={providerId}
               codexApiKey={codexApiKey}
-              onApiKeyChange={handleCodexApiKeyChange}
+              onApiKeyChange={handleCodexApiKeyInputChange}
               category={category}
               shouldShowApiKeyLink={shouldShowCodexApiKeyLink}
               websiteUrl={codexWebsiteUrl}
@@ -2200,7 +2289,7 @@ function ProviderFormFull({
               selectedKeyId={selectedKeyId}
               currentKeyValue={codexApiKey}
               onApiKeysChange={setApiKeys}
-              onSelectedKeyIdChange={setSelectedKeyId}
+              onSelectedKeyIdChange={handleSelectedApiKeyIdChange}
               newKeyStrategy="bearer"
             />
           )}
@@ -2213,7 +2302,7 @@ function ProviderFormFull({
                 isEditMode,
               )}
               apiKey={geminiApiKey}
-              onApiKeyChange={handleGeminiApiKeyChange}
+              onApiKeyChange={handleGeminiApiKeyInputChange}
               category={category}
               shouldShowApiKeyLink={shouldShowGeminiApiKeyLink}
               websiteUrl={geminiWebsiteUrl}
@@ -2239,7 +2328,7 @@ function ProviderFormFull({
               selectedKeyId={selectedKeyId}
               currentKeyValue={geminiApiKey}
               onApiKeysChange={setApiKeys}
-              onSelectedKeyIdChange={setSelectedKeyId}
+              onSelectedKeyIdChange={handleSelectedApiKeyIdChange}
               newKeyStrategy="google"
             />
           )}
