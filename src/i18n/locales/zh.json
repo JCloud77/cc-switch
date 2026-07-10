@@ -2589,6 +2589,10 @@
     "stopWithRestoreFailed": "停止失败: {{detail}}"
   },
   "streamCheck": {
+    "statusUntested": "{{providerName}}：未测试",
+    "statusTesting": "{{providerName}}：正在测试",
+    "statusSuccess": "{{providerName}}：测试成功",
+    "statusFailed": "{{providerName}}：测试失败",
     "reachable": "{{providerName}} 连通正常 ({{responseTimeMs}}ms)",
     "reachableSlow": "{{providerName}} 连通但较慢 ({{responseTimeMs}}ms)",
     "unreachable": "{{providerName}} 无法连通: {{message}}",

@@ -7,6 +7,8 @@ import {
 } from "@/lib/api/model-test";
 import type { AppId } from "@/lib/api";
 
+export type ProviderTestStatus = "success" | "failed";
+
 /**
  * 供应商连通性检查。
  *
@@ -17,6 +19,9 @@ import type { AppId } from "@/lib/api";
 export function useStreamCheck(appId: AppId) {
   const { t } = useTranslation();
   const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set());
+  const [testStatuses, setTestStatuses] = useState<
+    Map<string, ProviderTestStatus>
+  >(new Map());
 
   const checkProvider = useCallback(
     async (
@@ -27,6 +32,9 @@ export function useStreamCheck(appId: AppId) {
 
       try {
         const result = await streamCheckProvider(appId, providerId);
+        setTestStatuses((prev) =>
+          new Map(prev).set(providerId, result.success ? "success" : "failed"),
+        );
 
         if (result.status === "operational") {
           toast.success(
@@ -78,6 +86,7 @@ export function useStreamCheck(appId: AppId) {
 
         return result;
       } catch (e) {
+        setTestStatuses((prev) => new Map(prev).set(providerId, "failed"));
         toast.error(
           t("streamCheck.error", {
             providerName: providerName,
@@ -102,9 +111,15 @@ export function useStreamCheck(appId: AppId) {
     [checkingIds],
   );
 
+  const getTestStatus = useCallback(
+    (providerId: string) => testStatuses.get(providerId),
+    [testStatuses],
+  );
+
   return {
     checkProvider,
     isChecking,
     isCheckingAny: checkingIds.size > 0,
+    getTestStatus,
   };
 }

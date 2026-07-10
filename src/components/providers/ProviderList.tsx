@@ -29,7 +29,10 @@ import {
   useHermesLiveProviderIds,
   useHermesModelConfig,
 } from "@/hooks/useHermes";
-import { useStreamCheck } from "@/hooks/useStreamCheck";
+import {
+  useStreamCheck,
+  type ProviderTestStatus,
+} from "@/hooks/useStreamCheck";
 import { ProviderCard } from "@/components/providers/ProviderCard";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
 import {
@@ -91,7 +94,8 @@ export function ProviderList({
   onSetAsDefault,
 }: ProviderListProps) {
   const { t } = useTranslation();
-  const { checkProvider, isChecking, isCheckingAny } = useStreamCheck(appId);
+  const { checkProvider, isChecking, isCheckingAny, getTestStatus } =
+    useStreamCheck(appId);
   const { sortedProviders, sensors, handleDragEnd } = useDragSort(
     providers,
     appId,
@@ -442,6 +446,7 @@ export function ProviderList({
                 onOpenTerminal={onOpenTerminal}
                 onTest={handleTest}
                 isTesting={isChecking(provider.id)}
+                testStatus={getTestStatus(provider.id)}
                 isProxyRunning={isProxyRunning}
                 isProxyTakeover={isProxyTakeover}
                 isAutoFailoverEnabled={isFailoverModeActive}
@@ -607,6 +612,7 @@ interface SortableProviderCardProps {
   onOpenTerminal?: (provider: Provider) => void;
   onTest?: (provider: Provider) => void;
   isTesting: boolean;
+  testStatus?: ProviderTestStatus;
   isProxyRunning: boolean;
   isProxyTakeover: boolean;
   isAutoFailoverEnabled: boolean;
@@ -638,6 +644,7 @@ function SortableProviderCard({
   onOpenTerminal,
   onTest,
   isTesting,
+  testStatus,
   isProxyRunning,
   isProxyTakeover,
   isAutoFailoverEnabled,
@@ -685,6 +692,7 @@ function SortableProviderCard({
         onOpenTerminal={onOpenTerminal}
         onTest={onTest}
         isTesting={isTesting}
+        testStatus={testStatus}
         isProxyRunning={isProxyRunning}
         isProxyTakeover={isProxyTakeover}
         dragHandleProps={{

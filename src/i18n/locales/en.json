@@ -2589,6 +2589,10 @@
     "stopWithRestoreFailed": "Stop failed: {{detail}}"
   },
   "streamCheck": {
+    "statusUntested": "{{providerName}}: Not tested",
+    "statusTesting": "{{providerName}}: Testing",
+    "statusSuccess": "{{providerName}}: Test passed",
+    "statusFailed": "{{providerName}}: Test failed",
     "reachable": "{{providerName}} is reachable ({{responseTimeMs}}ms)",
     "reachableSlow": "{{providerName}} reachable but slow ({{responseTimeMs}}ms)",
     "unreachable": "{{providerName}} unreachable: {{message}}",

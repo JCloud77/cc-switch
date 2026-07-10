@@ -23,4 +23,12 @@ describe("ProviderCard layout", () => {
       "inline-flex max-w-full items-center overflow-hidden text-left text-sm",
     );
   });
+
+  it("places test status before the provider icon", () => {
+    const statusIndex = source.indexOf("<ProviderTestStatusIcon");
+    const providerIconIndex = source.indexOf("<ProviderIcon");
+
+    expect(statusIndex).toBeGreaterThan(-1);
+    expect(providerIconIndex).toBeGreaterThan(statusIndex);
+  });
 });

@@ -2589,6 +2589,10 @@
     "stopWithRestoreFailed": "停止に失敗しました: {{detail}}"
   },
   "streamCheck": {
+    "statusUntested": "{{providerName}}：未テスト",
+    "statusTesting": "{{providerName}}：テスト中",
+    "statusSuccess": "{{providerName}}：テスト成功",
+    "statusFailed": "{{providerName}}：テスト失敗",
     "reachable": "{{providerName}} は接続可能 ({{responseTimeMs}}ms)",
     "reachableSlow": "{{providerName}} は接続可能だが低速 ({{responseTimeMs}}ms)",
     "unreachable": "{{providerName}} に接続できません: {{message}}",

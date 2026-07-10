@@ -16,6 +16,7 @@ const useSortableMock = vi.fn();
 const providerCardRenderSpy = vi.fn();
 const checkProviderMock = vi.fn();
 const isCheckingMock = vi.fn();
+const getTestStatusMock = vi.fn();
 let isCheckingAnyMock = false;
 
 vi.mock("@/hooks/useDragSort", () => ({
@@ -96,6 +97,7 @@ vi.mock("@/hooks/useStreamCheck", () => ({
     checkProvider: checkProviderMock,
     isChecking: isCheckingMock,
     isCheckingAny: isCheckingAnyMock,
+    getTestStatus: getTestStatusMock,
   }),
 }));
 
@@ -138,6 +140,8 @@ beforeEach(() => {
   checkProviderMock.mockResolvedValue(null);
   isCheckingMock.mockReset();
   isCheckingMock.mockReturnValue(false);
+  getTestStatusMock.mockReset();
+  getTestStatusMock.mockReturnValue(undefined);
   isCheckingAnyMock = false;
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
@@ -219,6 +223,9 @@ describe("ProviderList Component", () => {
     const handleUsage = vi.fn();
     const handleOpenWebsite = vi.fn();
 
+    getTestStatusMock.mockImplementation((providerId: string) =>
+      providerId === "b" ? "success" : "failed",
+    );
     useDragSortMock.mockReturnValue({
       sortedProviders: [providerB, providerA],
       sensors: [],
@@ -244,8 +251,10 @@ describe("ProviderList Component", () => {
     expect(providerCardRenderSpy.mock.calls[0][0].provider.id).toBe("b");
     expect(providerCardRenderSpy.mock.calls[1][0].provider.id).toBe("a");
 
-    // Verify current provider marker
+    // Verify current provider marker and retained test status
     expect(providerCardRenderSpy.mock.calls[0][0].isCurrent).toBe(true);
+    expect(providerCardRenderSpy.mock.calls[0][0].testStatus).toBe("success");
+    expect(providerCardRenderSpy.mock.calls[1][0].testStatus).toBe("failed");
 
     // Drag attributes from useSortable
     expect(

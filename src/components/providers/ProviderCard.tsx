@@ -18,6 +18,7 @@ import { PROVIDER_TYPES, TEMPLATE_TYPES } from "@/config/constants";
 import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
 import { FailoverPriorityBadge } from "@/components/providers/FailoverPriorityBadge";
+import { ProviderTestStatusIcon } from "@/components/providers/ProviderTestStatusIcon";
 import {
   extractCodexBaseUrl,
   extractCodexExperimentalBearerToken,
@@ -26,6 +27,7 @@ import {
 } from "@/utils/providerConfigUtils";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
+import type { ProviderTestStatus } from "@/hooks/useStreamCheck";
 
 interface DragHandleProps {
   attributes: DraggableAttributes;
@@ -52,6 +54,7 @@ interface ProviderCardProps {
   onTest?: (provider: Provider) => void;
   onOpenTerminal?: (provider: Provider) => void;
   isTesting?: boolean;
+  testStatus?: ProviderTestStatus;
   isProxyRunning: boolean;
   isProxyTakeover?: boolean; // 代理接管模式（Live配置已被接管，切换为热切换）
   dragHandleProps?: DragHandleProps;
@@ -151,6 +154,7 @@ export function ProviderCard({
   onTest,
   onOpenTerminal,
   isTesting,
+  testStatus,
   isProxyRunning,
   isProxyTakeover = false,
   dragHandleProps,
@@ -334,6 +338,12 @@ export function ProviderCard({
           >
             <GripVertical className="h-4 w-4" />
           </button>
+
+          <ProviderTestStatusIcon
+            providerName={provider.name}
+            status={testStatus}
+            isTesting={isTesting === true}
+          />
 
           <div className="h-8 w-8 flex-shrink-0 rounded-lg bg-muted flex items-center justify-center border border-border group-hover:scale-105 transition-transform duration-300">
             <ProviderIcon
