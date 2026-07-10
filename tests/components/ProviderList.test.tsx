@@ -1,4 +1,10 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactElement } from "react";
@@ -8,6 +14,9 @@ import { ProviderList } from "@/components/providers/ProviderList";
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
 const providerCardRenderSpy = vi.fn();
+const checkProviderMock = vi.fn();
+const isCheckingMock = vi.fn();
+let isCheckingAnyMock = false;
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
@@ -84,8 +93,9 @@ vi.mock("@dnd-kit/sortable", async () => {
 // Mock hooks that use QueryClient
 vi.mock("@/hooks/useStreamCheck", () => ({
   useStreamCheck: () => ({
-    checkProvider: vi.fn(),
-    isChecking: () => false,
+    checkProvider: checkProviderMock,
+    isChecking: isCheckingMock,
+    isCheckingAny: isCheckingAnyMock,
   }),
 }));
 
@@ -124,6 +134,11 @@ beforeEach(() => {
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
   providerCardRenderSpy.mockClear();
+  checkProviderMock.mockReset();
+  checkProviderMock.mockResolvedValue(null);
+  isCheckingMock.mockReset();
+  isCheckingMock.mockReturnValue(false);
+  isCheckingAnyMock = false;
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -235,12 +250,12 @@ describe("ProviderList Component", () => {
     // Drag attributes from useSortable
     expect(
       providerCardRenderSpy.mock.calls[0][0].dragHandleProps?.attributes[
-      "data-dnd-id"
+        "data-dnd-id"
       ],
     ).toBe("b");
     expect(
       providerCardRenderSpy.mock.calls[1][0].dragHandleProps?.attributes[
-      "data-dnd-id"
+        "data-dnd-id"
       ],
     ).toBe("a");
 
@@ -262,6 +277,95 @@ describe("ProviderList Component", () => {
       { a: providerA, b: providerB },
       "claude",
     );
+  });
+
+  it("tests every non-official provider and stays disabled until mixed results finish", async () => {
+    const providerA = createProvider({ id: "a", name: "Provider A" });
+    const providerB = createProvider({ id: "b", name: "Provider B" });
+    const officialProvider = createProvider({
+      id: "official",
+      name: "Official Provider",
+      category: "official",
+    });
+    const pending = new Map<string, (value: unknown) => void>();
+
+    checkProviderMock.mockImplementation(
+      (providerId: string) =>
+        new Promise((resolve) => pending.set(providerId, resolve)),
+    );
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerA, officialProvider, providerB],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{
+          a: providerA,
+          official: officialProvider,
+          b: providerB,
+        }}
+        currentProviderId=""
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Test all providers" }));
+
+    expect(checkProviderMock).toHaveBeenCalledTimes(2);
+    expect(checkProviderMock).toHaveBeenCalledWith("a", "Provider A");
+    expect(checkProviderMock).toHaveBeenCalledWith("b", "Provider B");
+    expect(checkProviderMock).not.toHaveBeenCalledWith(
+      "official",
+      "Official Provider",
+    );
+    expect(
+      screen.getByRole("button", { name: "Testing all..." }),
+    ).toBeDisabled();
+
+    await act(async () => {
+      pending.get("a")?.({ status: "operational", success: true });
+      pending.get("b")?.({ status: "failed", success: false });
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Test all providers" }),
+      ).toBeEnabled(),
+    );
+  });
+
+  it("disables test all while an individual provider check is running", () => {
+    const provider = createProvider();
+    isCheckingAnyMock = true;
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ [provider.id]: provider }}
+        currentProviderId=""
+        appId="codex"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Test all providers" }),
+    ).toBeDisabled();
   });
 
   it("filters providers with the search input", () => {

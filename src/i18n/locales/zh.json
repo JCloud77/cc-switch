@@ -99,6 +99,9 @@
   },
   "provider": {
     "connectivityCheck": "检测连通",
+    "testAll": "测试全部供应商",
+    "testingAll": "正在测试全部...",
+    "testAllHint": "测试该应用下所有可测试的供应商",
     "tabProvider": "供应商",
     "tabUniversal": "统一供应商",
     "noProviders": "还没有添加任何供应商",

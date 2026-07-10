@@ -99,6 +99,9 @@
   },
   "provider": {
     "connectivityCheck": "Connectivity check",
+    "testAll": "Test all providers",
+    "testingAll": "Testing all...",
+    "testAllHint": "Test every testable provider in this app",
     "tabProvider": "Provider",
     "tabUniversal": "Universal",
     "noProviders": "No providers added yet",

@@ -3,6 +3,11 @@
 
 ## 未完成
 
+- [ ] 新增按应用“一键测试全部供应商”：在 Claude、Codex、Gemini、OpenCode、OpenClaw、Hermes、Claude Desktop 等应用的供应商列表中提供统一入口，一次触发该应用下所有可测试供应商的现有连通性/Agent 探测逻辑；行为应等同于逐个点击每张供应商卡片的测试按钮，保留逐供应商加载状态与结果提示，跳过原本不显示测试按钮的官方供应商，并在批量或单项测试进行时防止重复触发。
+  - [x] 已增加应用级测试全部按钮、批量加载/禁用状态与四语言文案。
+  - [x] 已复用 `useStreamCheck` 的单供应商检测，不新增另一套探测判定或触碰故障转移熔断器。
+  - [ ] 已补充批量触发、官方供应商跳过及防重复测试覆盖，并通过 `typecheck`、`format:check`、390 项前端单测与 renderer production build；待 GitHub Actions Windows 构建验证。
+
 - [ ] 将当前本地魔改分支升级到官方 `v3.16.5`：从当前 `main` 创建安全备份与独立升级分支，合并官方 release tag，保留 agent 风格供应商探测、Codex 模型别名映射、多 API Key 管理及 Windows 手动构建流程；解决冲突并完成前端检查与 GitHub Actions Windows 构建验证。
   - [x] 已创建安全分支 `backup/custom-main-before-upstream-v3.16.5` 与升级分支 `upgrade/upstream-v3.16.5`，并完成官方 `v3.16.5` 合并。
   - [x] 已核查本地魔改保留情况，并通过 i18n JSON、`typecheck`、`format:check`、388 项前端单测与 renderer production build。

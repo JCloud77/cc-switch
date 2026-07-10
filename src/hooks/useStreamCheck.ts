@@ -102,5 +102,9 @@ export function useStreamCheck(appId: AppId) {
     [checkingIds],
   );
 
-  return { checkProvider, isChecking };
+  return {
+    checkProvider,
+    isChecking,
+    isCheckingAny: checkingIds.size > 0,
+  };
 }

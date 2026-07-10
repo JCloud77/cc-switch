@@ -13,7 +13,7 @@ import {
   type CSSProperties,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, Search, X } from "lucide-react";
+import { Activity, AlertTriangle, Loader2, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -91,11 +91,12 @@ export function ProviderList({
   onSetAsDefault,
 }: ProviderListProps) {
   const { t } = useTranslation();
-  const { checkProvider, isChecking } = useStreamCheck(appId);
+  const { checkProvider, isChecking, isCheckingAny } = useStreamCheck(appId);
   const { sortedProviders, sensors, handleDragEnd } = useDragSort(
     providers,
     appId,
   );
+  const [isTestingAll, setIsTestingAll] = useState(false);
 
   const { data: opencodeLiveIds } = useQuery({
     queryKey: ["opencodeLiveProviderIds"],
@@ -201,10 +202,35 @@ export function ProviderList({
   // 连通性检查会对 Claude/Codex 发送极小 agent 风格真实请求；按用户要求沿用原按钮直接执行。
   const handleTest = useCallback(
     (provider: Provider) => {
-      checkProvider(provider.id, provider.name);
+      void checkProvider(provider.id, provider.name);
     },
     [checkProvider],
   );
+
+  // 与单张卡片保持同一可测试范围：官方供应商没有可靠的探测目标，原按钮不显示，
+  // 因此“一键测试”同样跳过。始终使用完整排序列表，不受当前搜索筛选影响。
+  const testableProviders = useMemo(
+    () =>
+      sortedProviders.filter((provider) => provider.category !== "official"),
+    [sortedProviders],
+  );
+
+  const handleTestAll = useCallback(async () => {
+    if (isTestingAll || isCheckingAny || testableProviders.length === 0) {
+      return;
+    }
+
+    setIsTestingAll(true);
+    try {
+      await Promise.all(
+        testableProviders.map((provider) =>
+          checkProvider(provider.id, provider.name),
+        ),
+      );
+    } finally {
+      setIsTestingAll(false);
+    }
+  }, [checkProvider, isCheckingAny, isTestingAll, testableProviders]);
 
   // Import current live config as default provider
   const queryClient = useQueryClient();
@@ -444,6 +470,32 @@ export function ProviderList({
 
   return (
     <div className="mt-4 space-y-4">
+      <div className="flex items-center justify-end">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => void handleTestAll()}
+          disabled={
+            testableProviders.length === 0 || isTestingAll || isCheckingAny
+          }
+          title={t("provider.testAllHint", {
+            defaultValue: "Test every testable provider in this app",
+          })}
+        >
+          {isTestingAll ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Activity className="h-4 w-4" />
+          )}
+          {t(isTestingAll ? "provider.testingAll" : "provider.testAll", {
+            defaultValue: isTestingAll
+              ? "Testing all..."
+              : "Test all providers",
+          })}
+        </Button>
+      </div>
+
       {claudeDesktopStatusMessages.length > 0 && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
           <div className="flex items-center gap-2 font-medium">

@@ -99,6 +99,9 @@
   },
   "provider": {
     "connectivityCheck": "接続チェック",
+    "testAll": "すべてのプロバイダーをテスト",
+    "testingAll": "すべてテスト中...",
+    "testAllHint": "このアプリのテスト可能なすべてのプロバイダーをテストします",
     "tabProvider": "プロバイダー",
     "tabUniversal": "統一プロバイダー",
     "noProviders": "まだプロバイダーがありません",
