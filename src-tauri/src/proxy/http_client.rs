@@ -4,9 +4,9 @@
 //! 所有需要发送 HTTP 请求的模块都应使用此模块提供的客户端。
 
 use once_cell::sync::OnceCell;
-use reqwest::Client;
+use reqwest::{Client, ClientBuilder};
 use std::env;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::RwLock;
 use std::time::Duration;
 
@@ -18,6 +18,13 @@ static CURRENT_PROXY_URL: OnceCell<RwLock<Option<String>>> = OnceCell::new();
 
 /// CC Switch 代理服务器当前监听的端口
 static CC_SWITCH_PROXY_PORT: OnceCell<RwLock<u16>> = OnceCell::new();
+
+/// 显式开启安全测试模式。默认关闭，避免生产环境意外启用静态解析。
+const SECURITY_TEST_MODE_ENV: &str = "CC_SWITCH_SECURITY_TEST_MODE";
+/// 安全测试模式下，坚果云 WebDAV 的静态 IP 列表（逗号或分号分隔）。
+const SECURITY_TEST_JIANGUOYUN_IPS_ENV: &str = "CC_SWITCH_SECURITY_TEST_JIANGUOYUN_IPS";
+const JIANGUOYUN_WEBDAV_HOST: &str = "dav.jianguoyun.com";
+const HTTPS_PORT: u16 = 443;
 
 /// 设置 CC Switch 代理服务器的监听端口
 ///
@@ -212,6 +219,96 @@ pub fn is_proxy_enabled() -> bool {
     get_current_proxy_url().is_some()
 }
 
+fn security_test_mode_enabled(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn parse_security_test_jianguoyun_addrs(raw: &str) -> Result<Vec<SocketAddr>, String> {
+    let mut addrs = Vec::new();
+
+    for value in raw.split([',', ';']) {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+
+        let ip = value
+            .parse::<IpAddr>()
+            .map_err(|_| format!("Invalid IP in {SECURITY_TEST_JIANGUOYUN_IPS_ENV}: '{value}'"))?;
+        if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
+            return Err(format!(
+                "Unsafe IP in {SECURITY_TEST_JIANGUOYUN_IPS_ENV}: '{value}'"
+            ));
+        }
+
+        let addr = SocketAddr::new(ip, HTTPS_PORT);
+        if !addrs.contains(&addr) {
+            addrs.push(addr);
+        }
+    }
+
+    if addrs.is_empty() {
+        return Err(format!(
+            "{SECURITY_TEST_JIANGUOYUN_IPS_ENV} does not contain any IP addresses"
+        ));
+    }
+
+    Ok(addrs)
+}
+
+/// 在明确授权的安全测试环境中，为坚果云 WebDAV 添加静态解析。
+///
+/// 该功能默认关闭、仅作用于 `dav.jianguoyun.com`，不会关闭 TLS/SNI 校验，
+/// 并在启用时写入显眼的审计日志。配置了 CC Switch 显式全局代理时忽略该覆盖，
+/// 因为此时目标域名通常由代理端解析。
+fn apply_security_test_jianguoyun_override(
+    builder: ClientBuilder,
+    has_explicit_proxy: bool,
+) -> Result<ClientBuilder, String> {
+    let raw_ips = match env::var(SECURITY_TEST_JIANGUOYUN_IPS_ENV) {
+        Ok(value) if !value.trim().is_empty() => value,
+        Ok(_) | Err(env::VarError::NotPresent) => return Ok(builder),
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(format!(
+                "{SECURITY_TEST_JIANGUOYUN_IPS_ENV} contains non-Unicode data"
+            ));
+        }
+    };
+
+    let mode_enabled = env::var(SECURITY_TEST_MODE_ENV)
+        .map(|value| security_test_mode_enabled(&value))
+        .unwrap_or(false);
+    if !mode_enabled {
+        log::warn!(
+            "[SecurityTest] Ignoring {SECURITY_TEST_JIANGUOYUN_IPS_ENV}: \
+             set {SECURITY_TEST_MODE_ENV}=1 to enable the audited test override"
+        );
+        return Ok(builder);
+    }
+
+    if has_explicit_proxy {
+        log::warn!(
+            "[SecurityTest] Ignoring Jianguoyun DNS override because an explicit global proxy is configured"
+        );
+        return Ok(builder);
+    }
+
+    let addrs = parse_security_test_jianguoyun_addrs(&raw_ips)?;
+    let rendered = addrs
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    log::warn!(
+        "[SecurityTest] AUDIT: static DNS override active for {JIANGUOYUN_WEBDAV_HOST}: {rendered}"
+    );
+
+    Ok(builder.resolve_to_addrs(JIANGUOYUN_WEBDAV_HOST, &addrs))
+}
+
 /// 构建 HTTP 客户端
 fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
     let mut builder = Client::builder()
@@ -225,6 +322,8 @@ fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
         .no_brotli()
         .no_deflate()
         .no_zstd();
+
+    builder = apply_security_test_jianguoyun_override(builder, proxy_url.is_some())?;
 
     // 有代理地址则使用代理，否则跟随系统代理
     if let Some(url) = proxy_url {
@@ -370,6 +469,46 @@ mod tests {
     fn test_build_client_direct() {
         let result = build_client(None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_security_test_mode_values() {
+        for enabled in ["1", "true", "TRUE", "yes", "On", " on "] {
+            assert!(
+                security_test_mode_enabled(enabled),
+                "expected enabled: {enabled}"
+            );
+        }
+        for disabled in ["", "0", "false", "no", "off", "random"] {
+            assert!(
+                !security_test_mode_enabled(disabled),
+                "expected disabled: {disabled}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_security_test_jianguoyun_addrs() {
+        let addrs =
+            parse_security_test_jianguoyun_addrs("36.155.116.35, 36.155.116.36;36.155.116.35")
+                .unwrap();
+        assert_eq!(
+            addrs,
+            vec![
+                "36.155.116.35:443".parse().unwrap(),
+                "36.155.116.36:443".parse().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_security_test_jianguoyun_addrs_rejects_invalid_values() {
+        for value in ["", "dav.jianguoyun.com", "127.0.0.1", "0.0.0.0"] {
+            assert!(
+                parse_security_test_jianguoyun_addrs(value).is_err(),
+                "expected rejection: {value}"
+            );
+        }
     }
 
     #[test]
