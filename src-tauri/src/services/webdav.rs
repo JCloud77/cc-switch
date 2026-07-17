@@ -4,6 +4,7 @@
 //! The sync protocol logic lives in [`super::webdav_sync`].
 
 use reqwest::{Method, RequestBuilder, StatusCode, Url};
+use std::error::Error as StdError;
 use std::time::Duration;
 
 use crate::error::AppError;
@@ -119,6 +120,25 @@ fn webdav_transport_error(
     };
 
     let safe_url = redact_url(target_url);
+    let proxy = http_client::get_current_proxy_url()
+        .map(|url| http_client::mask_url(&url))
+        .unwrap_or_else(|| "direct".to_string());
+    let mut sources = Vec::new();
+    let mut source = StdError::source(err);
+    while let Some(current) = source {
+        sources.push(current.to_string());
+        source = current.source();
+    }
+    let source_chain = if sources.is_empty() {
+        "(none)".to_string()
+    } else {
+        sources.join(" -> ")
+    };
+    log::warn!(
+        "[WebDAV][Transport] op={op_en} reason={en_reason} url={safe_url} \
+         proxy={proxy} sources={source_chain}"
+    );
+
     AppError::localized(
         key,
         format!("WebDAV {op_zh}失败（{zh_reason}）: {safe_url}"),
