@@ -43,6 +43,32 @@ describe("useCodexConfigState catalog load", () => {
     ]);
   });
 
+  it("keeps explicit blank display names but restores legacy missing names", () => {
+    const initialData = {
+      settingsConfig: {
+        auth: {},
+        config: "",
+        modelCatalog: {
+          models: [
+            { model: "wildcard-target", displayName: "" },
+            { model: "legacy-model" },
+          ],
+        },
+      },
+    };
+
+    const { result } = renderHook(() => useCodexConfigState({ initialData }));
+
+    expect(result.current.codexCatalogModels).toEqual([
+      { model: "wildcard-target", displayName: "", contextWindow: "" },
+      {
+        model: "legacy-model",
+        displayName: "legacy-model",
+        contextWindow: "",
+      },
+    ]);
+  });
+
   it("maps snake_case hidden fields (live reverse-parse fallback) to camelCase", () => {
     const initialData = {
       settingsConfig: {

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { normalizeCodexCatalogModelsForSave } from "@/components/providers/forms/ProviderForm";
+import {
+  countCodexWildcardCatalogModels,
+  normalizeCodexCatalogModelsForSave,
+} from "@/components/providers/forms/ProviderForm";
 
 describe("ProviderForm Codex catalog helpers", () => {
   it("normalizes catalog rows and removes empty or duplicate models", () => {
@@ -12,7 +15,7 @@ describe("ProviderForm Codex catalog helpers", () => {
       ]),
     ).toEqual([
       { model: "deepseek-v4-flash", displayName: "DeepSeek" },
-      { model: "kimi-k2", contextWindow: 128000 },
+      { model: "kimi-k2", displayName: "", contextWindow: 128000 },
     ]);
   });
 
@@ -46,7 +49,28 @@ describe("ProviderForm Codex catalog helpers", () => {
         inputModalities: ["text", "image"],
         baseInstructions: "You are Codex, a coding agent based on MiniMax-M3.",
       },
-      { model: "mimo-v2.5-pro", supportsParallelToolCalls: false },
+      {
+        model: "mimo-v2.5-pro",
+        displayName: "",
+        supportsParallelToolCalls: false,
+      },
     ]);
+  });
+
+  it("counts only normalized rows with blank display names as wildcards", () => {
+    expect(
+      countCodexWildcardCatalogModels([
+        { model: " target-a ", displayName: "  " },
+        { model: "target-b", displayName: "Named" },
+        { model: "", displayName: "" },
+      ]),
+    ).toBe(1);
+
+    expect(
+      countCodexWildcardCatalogModels([
+        { model: "target-a", displayName: "" },
+        { model: "target-b" },
+      ]),
+    ).toBe(2);
   });
 });

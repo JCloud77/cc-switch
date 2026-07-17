@@ -71,6 +71,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
             // 原样保留，否则编辑保存 MiMo/MiniMax 等会丢官方 base_instructions、
             // 并行工具、图像模态。DB SSOT 为 camelCase、live 反解兜底可能为 snake_case，
             // 双格式兼容（与 displayName/contextWindow 一致）。
+            const model = typeof item?.model === "string" ? item.model : "";
             const supportsParallelToolCalls =
               typeof item?.supportsParallelToolCalls === "boolean"
                 ? item.supportsParallelToolCalls
@@ -89,13 +90,17 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
                   ? item.base_instructions
                   : undefined;
             return {
-              model: typeof item?.model === "string" ? item.model : "",
+              model,
+              // Explicit empty string is the wildcard marker. Legacy entries
+              // with no display-name field used the model itself as their
+              // generated menu label, so restore that label instead of
+              // silently converting them into wildcard mappings on save.
               displayName:
                 typeof item?.displayName === "string"
                   ? item.displayName
                   : typeof item?.display_name === "string"
                     ? item.display_name
-                    : "",
+                    : model,
               contextWindow:
                 typeof item?.contextWindow === "string" ||
                 typeof item?.contextWindow === "number"

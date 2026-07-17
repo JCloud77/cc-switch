@@ -558,7 +558,7 @@ export function CodexFormFields({
                   <p className="text-xs leading-relaxed text-muted-foreground">
                     {t("codexConfig.modelMappingHint", {
                       defaultValue:
-                        "选择模型角色后，CC Switch 会自动生成 Codex 兼容路由；菜单显示名可以填 DeepSeek、Kimi 等品牌模型，实际请求模型按右侧填写内容发送。",
+                        "生成 Codex 模型目录；唯一一条菜单显示名留空的记录会作为通配规则，把所有请求统一改写为其实际请求模型。修改后需重启 Codex。",
                     })}
                   </p>
                 </div>
@@ -600,7 +600,7 @@ export function CodexFormFields({
                           placeholder={t(
                             "codexConfig.catalogDisplayNamePlaceholder",
                             {
-                              defaultValue: "例如: DeepSeek V4 Flash",
+                              defaultValue: "留空 = 通配所有请求模型",
                             },
                           )}
                           aria-label={t("codexConfig.catalogColumnDisplay", {

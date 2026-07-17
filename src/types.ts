@@ -267,6 +267,8 @@ export type CodexApiFormat = "openai_responses" | "openai_chat";
 
 export interface CodexCatalogModel {
   model: string;
+  // An explicitly empty value marks the single catch-all proxy mapping.
+  // An omitted value is retained for compatibility with legacy/imported data.
   displayName?: string;
   contextWindow?: string | number;
   // Native Responses (direct) profile overrides for the generated

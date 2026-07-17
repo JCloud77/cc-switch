@@ -163,7 +163,10 @@ export const normalizeCodexCatalogModelsForSave = (
     if (!model || seen.has(model)) continue;
     seen.add(model);
 
-    const displayName = item.displayName?.trim();
+    // Persist an explicitly empty display name as the single wildcard marker.
+    // The edit-mode loader restores missing legacy names to their model ID before
+    // they reach this normalization, avoiding accidental wildcard conversion.
+    const displayName = item.displayName?.trim() ?? "";
     const rawContextWindow = String(item.contextWindow ?? "").replace(
       /[^\d]/g,
       "",
@@ -180,7 +183,7 @@ export const normalizeCodexCatalogModelsForSave = (
 
     normalized.push({
       model,
-      ...(displayName ? { displayName } : {}),
+      displayName,
       ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
       // Native Responses profile overrides (ignored by the chat/proxy profile).
       ...(typeof item.supportsParallelToolCalls === "boolean"
@@ -195,6 +198,13 @@ export const normalizeCodexCatalogModelsForSave = (
 
   return normalized;
 };
+
+export const countCodexWildcardCatalogModels = (
+  models: CodexCatalogModel[],
+): number =>
+  normalizeCodexCatalogModelsForSave(models).filter(
+    (item) => item.displayName === "",
+  ).length;
 
 const normalizeCodexChatReasoningForSave = (
   value?: CodexChatReasoning,
@@ -1088,6 +1098,19 @@ function ProviderFormFull({
         t("providerForm.localProxyRequestOverridesInvalid", {
           defaultValue: `本地代理请求覆盖格式错误：${overridesResult.error}`,
           error: overridesResult.error,
+        }),
+      );
+      return;
+    }
+
+    if (
+      appId === "codex" &&
+      countCodexWildcardCatalogModels(codexCatalogModels) > 1
+    ) {
+      toast.error(
+        t("codexConfig.multipleWildcardMappings", {
+          defaultValue:
+            "只能保留一条菜单显示名为空的通配模型映射，请填写其余显示名或删除多余条目。",
         }),
       );
       return;

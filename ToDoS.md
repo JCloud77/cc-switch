@@ -10,6 +10,11 @@
   - [x] 已补充批量触发、官方供应商跳过、防重复和状态图标覆盖，并通过 `typecheck`、`format:check`、395 项前端单测、renderer production build，以及升级分支 `affcdb63` 的 GitHub Actions Windows 检查与 exe 构建。
   - [ ] 待 Windows 实机验证一键测试、逐供应商结果提示以及中性/加载/绿色成功/红色失败状态图标。
 
+- [ ] 新增 Codex 通配模型映射：在供应商模型映射中，如果唯一一条配置填写了“实际请求模型”但将“菜单显示名”留空，则把经过该供应商代理的所有带模型请求统一改写为该实际请求模型；显式空值需与旧配置中缺失显示名区分，多个空显示名属于歧义配置并禁止保存，后端对导入的歧义配置采取安全的不启用通配策略；同步四语言说明并补充前后端测试。
+  - [x] 已实现显式空显示名持久化、旧配置兼容、全请求通配改写、多个通配前端校验及后端安全降级，并更新四语言说明与输入提示。
+  - [x] 已补充前端归一化/旧配置读取测试和 Rust 通配/旧配置/歧义配置单测；通过 `typecheck`、`format:check`、397 项前端单测及 renderer production build。
+  - [ ] 待 GitHub Actions Windows runner 执行 Rust formatting、Clippy、编译和 exe 构建，并在 Windows 实机验证任意请求模型均改写到通配目标。
+
 - [ ] 将当前本地魔改分支升级到官方 `v3.16.5`：从当前 `main` 创建安全备份与独立升级分支，合并官方 release tag，保留 agent 风格供应商探测、Codex 模型别名映射、多 API Key 管理及 Windows 手动构建流程；解决冲突并完成前端检查与 GitHub Actions Windows 构建验证。
   - [x] 已创建安全分支 `backup/custom-main-before-upstream-v3.16.5` 与升级分支 `upgrade/upstream-v3.16.5`，并完成官方 `v3.16.5` 合并。
   - [x] 已核查本地魔改保留情况，并通过 i18n JSON、`typecheck`、`format:check`、388 项前端单测与 renderer production build。

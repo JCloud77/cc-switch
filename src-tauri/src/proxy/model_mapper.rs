@@ -130,13 +130,15 @@ pub fn apply_model_mapping(
     (body, original_model, None)
 }
 
-/// 对 Codex provider 的 `modelCatalog` 菜单显示名应用本地代理映射。
+/// 对 Codex provider 的 `modelCatalog` 应用本地代理映射。
 ///
-/// Codex CLI 会读取 CC Switch 生成的 model catalog，因此它通常直接发送
-/// `modelCatalog.models[].model`（真实上游模型）。但 pi 等直接走本地 Codex
-/// 代理的 API 客户端不会读取这个 catalog，可能发送的是用户看到/选择的
-/// `displayName`（例如 `gpt-5.5`）。这里在代理层把 displayName 映射回真实
-/// `model`，让 Codex 模型映射对非 Codex CLI 客户端也生效。
+/// 唯一一条显式空 `displayName` 是通配映射，会把所有带模型请求改写到该条目的
+/// 真实 `model`；缺失 `displayName` 的旧配置不视为通配。多个显式空显示名存在
+/// 歧义，后端会安全地禁用通配，但仍保留普通显示名的精确匹配。
+///
+/// 没有通配时，Codex CLI 通常直接发送 model catalog 的真实上游模型；pi 等
+/// 不读取 catalog 的客户端可能发送用户看到的 `displayName`（例如 `gpt-5.5`），
+/// 此时代理层按显示名映射回真实 `model`。
 pub fn apply_codex_model_catalog_mapping(
     mut body: Value,
     provider: &Provider,
@@ -159,6 +161,43 @@ pub fn apply_codex_model_catalog_mapping(
     else {
         return (body, original_model, None);
     };
+
+    // Only an explicitly present empty string is a wildcard. This preserves
+    // legacy/imported entries where displayName is entirely absent.
+    let wildcard_models: Vec<&str> = models
+        .iter()
+        .filter_map(|entry| {
+            let actual_model = entry
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())?;
+            let display_name = entry
+                .get("displayName")
+                .or_else(|| entry.get("display_name"))?
+                .as_str()?;
+            display_name.trim().is_empty().then_some(actual_model)
+        })
+        .collect();
+
+    match wildcard_models.as_slice() {
+        [actual_model] if *actual_model != original.as_str() => {
+            log::debug!("[ModelMapper] Codex 通配模型映射: {original} → {actual_model}");
+            body["model"] = serde_json::json!(actual_model);
+            return (body, original_model, Some((*actual_model).to_string()));
+        }
+        [actual_model] => {
+            debug_assert_eq!(*actual_model, original.as_str());
+            return (body, original_model, None);
+        }
+        [_, _, ..] => {
+            log::warn!(
+                "[ModelMapper] Codex provider {} 存在多个空显示名，已禁用歧义的通配映射",
+                provider.id
+            );
+        }
+        [] => {}
+    }
 
     let mut case_insensitive_match: Option<String> = None;
     for entry in models {
@@ -327,6 +366,67 @@ mod tests {
         let (result, _, mapped) = apply_codex_model_catalog_mapping(body, &provider);
         assert_eq!(result["model"], "deepseek-v4-pro");
         assert_eq!(mapped, Some("deepseek-v4-pro".to_string()));
+    }
+
+    #[test]
+    fn test_codex_catalog_blank_display_name_maps_every_model() {
+        let mut provider = create_codex_provider_with_catalog();
+        provider.settings_config = json!({
+            "modelCatalog": {
+                "models": [
+                    {"model": "deepseek-v4-pro", "displayName": ""},
+                    {"model": "kimi-k2", "displayName": "Kimi"}
+                ]
+            }
+        });
+
+        for requested_model in ["gpt-5.5", "Kimi", "unlisted-model"] {
+            let body = json!({"model": requested_model});
+            let (result, original, mapped) = apply_codex_model_catalog_mapping(body, &provider);
+            assert_eq!(result["model"], "deepseek-v4-pro");
+            assert_eq!(original, Some(requested_model.to_string()));
+            assert_eq!(mapped, Some("deepseek-v4-pro".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_codex_catalog_missing_display_name_is_not_wildcard() {
+        let mut provider = create_codex_provider_with_catalog();
+        provider.settings_config = json!({
+            "modelCatalog": {
+                "models": [{"model": "deepseek-v4-pro"}]
+            }
+        });
+        let body = json!({"model": "gpt-5.5"});
+        let (result, original, mapped) = apply_codex_model_catalog_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.5");
+        assert_eq!(original, Some("gpt-5.5".to_string()));
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn test_codex_catalog_multiple_blank_display_names_disable_wildcard() {
+        let mut provider = create_codex_provider_with_catalog();
+        provider.settings_config = json!({
+            "modelCatalog": {
+                "models": [
+                    {"model": "deepseek-v4-pro", "displayName": ""},
+                    {"model": "kimi-k2", "displayName": "  "},
+                    {"model": "minimax-m3", "displayName": "MiniMax"}
+                ]
+            }
+        });
+
+        let body = json!({"model": "unlisted-model"});
+        let (result, _, mapped) = apply_codex_model_catalog_mapping(body, &provider);
+        assert_eq!(result["model"], "unlisted-model");
+        assert!(mapped.is_none());
+
+        let body = json!({"model": "MiniMax"});
+        let (result, _, mapped) = apply_codex_model_catalog_mapping(body, &provider);
+        assert_eq!(result["model"], "minimax-m3");
+        assert_eq!(mapped, Some("minimax-m3".to_string()));
     }
 
     #[test]
