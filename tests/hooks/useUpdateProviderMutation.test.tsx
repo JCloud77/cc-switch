@@ -72,7 +72,7 @@ beforeEach(() => {
 });
 
 describe("useUpdateProviderMutation", () => {
-  it("invalidates the updated provider usage query", async () => {
+  it("invalidates both shared provider lists and the updated usage query", async () => {
     const { wrapper, invalidateSpy } = createWrapper();
     const provider = createProvider({ id: "provider-b" });
     const { result } = renderHook(() => useUpdateProviderMutation("codex"), {
@@ -85,7 +85,7 @@ describe("useUpdateProviderMutation", () => {
 
     expect(apiMocks.update).toHaveBeenCalledWith(provider, "codex", undefined);
     expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: ["providers", "codex"],
+      queryKey: ["providers"],
     });
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: usageKeys.script("provider-b", "codex"),

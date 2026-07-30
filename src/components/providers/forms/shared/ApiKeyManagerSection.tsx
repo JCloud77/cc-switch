@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleCheck, Plus, Trash2 } from "lucide-react";
+import { CircleCheck, Plus, Share2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { ApiKeyEntry } from "@/types";
@@ -13,6 +13,8 @@ interface ApiKeyManagerSectionProps {
   selectedKeyId?: string;
   /** Current value in the main API key input */
   currentKeyValue: string;
+  /** Apps linked to the same central key pool */
+  sharedKeyApps?: string[];
   /** Called when keys list changes */
   onApiKeysChange: (keys: ApiKeyEntry[]) => void;
   /** Called when selected key changes */
@@ -28,6 +30,7 @@ export function ApiKeyManagerSection({
   apiKeys,
   selectedKeyId,
   currentKeyValue,
+  sharedKeyApps,
   onApiKeysChange,
   onSelectedKeyIdChange,
   defaultStrategy,
@@ -36,14 +39,34 @@ export function ApiKeyManagerSection({
 }: ApiKeyManagerSectionProps) {
   const { t } = useTranslation();
   const [newKeyLabel, setNewKeyLabel] = useState("");
+  const isCrossAppShared =
+    sharedKeyApps?.includes("claude") === true &&
+    sharedKeyApps.includes("codex");
 
   const handleAddKey = () => {
-    if (!currentKeyValue.trim()) return;
+    const keyValue = currentKeyValue.trim();
+    if (!keyValue) return;
+
+    const existing = apiKeys.find((entry) => entry.key.trim() === keyValue);
+    if (existing) {
+      const label = newKeyLabel.trim();
+      if (!existing.label.trim() && label) {
+        onApiKeysChange(
+          apiKeys.map((entry) =>
+            entry.id === existing.id ? { ...entry, label } : entry,
+          ),
+        );
+      }
+      onSelectedKeyIdChange(existing.id);
+      setNewKeyLabel("");
+      return;
+    }
+
     const label = newKeyLabel.trim() || `Key ${apiKeys.length + 1}`;
     const newEntry: ApiKeyEntry = {
       id: crypto.randomUUID(),
       label,
-      key: currentKeyValue.trim(),
+      key: keyValue,
       strategy: newKeyStrategy || defaultStrategy || "bearer",
     };
     onApiKeysChange([...apiKeys, newEntry]);
@@ -66,6 +89,18 @@ export function ApiKeyManagerSection({
           {t("providerForm.savedKeys", { defaultValue: "备用 API Key" })}
         </span>
       </div>
+
+      {isCrossAppShared && (
+        <div className="flex items-start gap-2 rounded-md border border-primary/20 bg-primary/5 px-2.5 py-2 text-xs text-muted-foreground">
+          <Share2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+          <span>
+            {t("providerForm.crossAppSharedKeysHint", {
+              defaultValue:
+                "此 Key 列表由 Claude 与 Codex 的同一供应商共享；双方仍可独立选择当前 Key。删除另一应用正在使用的 Key 前，请先在该应用中切换。",
+            })}
+          </span>
+        </div>
+      )}
 
       {/* Saved keys list */}
       {apiKeys.length > 0 && (

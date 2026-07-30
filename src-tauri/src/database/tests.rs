@@ -346,6 +346,86 @@ fn schema_migration_v4_adds_pricing_model_columns() {
 }
 
 #[test]
+fn shared_keys_migration_v11_to_v12_centralizes_and_deduplicates() {
+    let conn = Connection::open_in_memory().expect("open db");
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .expect("enable foreign keys");
+    Database::create_tables_on_conn(&conn).expect("create current tables");
+
+    let claude_meta = json!({
+        "apiKeys": [
+            {"id": "claude-a", "label": "A", "key": "sk-a", "strategy": "anthropic"},
+            {"id": "claude-shared", "label": "", "key": "sk-shared", "strategy": "anthropic"}
+        ],
+        "selectedKeyId": "claude-a"
+    });
+    let codex_meta = json!({
+        "apiKeys": [
+            {"id": "codex-shared", "label": "Shared", "key": "sk-shared", "strategy": "bearer"},
+            {"id": "codex-b", "label": "B", "key": "sk-b", "strategy": "bearer"}
+        ],
+        "selectedKeyId": "codex-b"
+    });
+    conn.execute(
+        "INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES (?1, 'claude', ?2, ?3, ?4)",
+        params![
+            "claude-provider",
+            " Same Vendor ",
+            json!({"env": {"ANTHROPIC_BASE_URL": "https://claude.vendor.example"}})
+                .to_string(),
+            claude_meta.to_string()
+        ],
+    )
+    .expect("insert Claude provider");
+    conn.execute(
+        "INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES (?1, 'codex', ?2, ?3, ?4)",
+        params![
+            "codex-provider",
+            "same vendor",
+            json!({"config": "base_url = \"https://codex.vendor.example\""}).to_string(),
+            codex_meta.to_string()
+        ],
+    )
+    .expect("insert Codex provider");
+    Database::set_user_version(&conn, 11).expect("set user_version=11");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate to current schema");
+
+    let (key_count, link_count, group_count): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM shared_api_keys),
+                (SELECT COUNT(*) FROM provider_shared_key_links),
+                (SELECT COUNT(DISTINCT group_id) FROM provider_shared_key_links)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read shared key counts");
+    assert_eq!(key_count, 3);
+    assert_eq!(link_count, 2);
+    assert_eq!(group_count, 1);
+
+    let mut stmt = conn
+        .prepare("SELECT meta FROM providers ORDER BY app_type")
+        .expect("prepare provider metas");
+    let metas = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query provider metas")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect provider metas");
+    assert!(metas.iter().all(|raw| {
+        let meta: serde_json::Value = serde_json::from_str(raw).expect("valid meta");
+        meta.get("apiKeys").is_none() && meta.get("selectedKeyId").is_some()
+    }));
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version after migration"),
+        SCHEMA_VERSION
+    );
+}
+
+#[test]
 fn migration_v10_to_v11_rebuilds_rollups_with_request_model_dimension() {
     let conn = Connection::open_in_memory().expect("open memory db");
 

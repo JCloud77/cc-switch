@@ -2250,6 +2250,7 @@ function ProviderFormFull({
                 apiKeys={apiKeys}
                 selectedKeyId={selectedKeyId}
                 currentKeyValue={apiKey}
+                sharedKeyApps={initialData?.meta?.sharedKeyApps}
                 onApiKeysChange={setApiKeys}
                 onSelectedKeyIdChange={handleSelectedApiKeyIdChange}
                 newKeyStrategy={
@@ -2302,6 +2303,7 @@ function ProviderFormFull({
               apiKeys={apiKeys}
               selectedKeyId={selectedKeyId}
               currentKeyValue={codexApiKey}
+              sharedKeyApps={initialData?.meta?.sharedKeyApps}
               onApiKeysChange={setApiKeys}
               onSelectedKeyIdChange={handleSelectedApiKeyIdChange}
               newKeyStrategy="bearer"

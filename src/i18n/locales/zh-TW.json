@@ -1127,6 +1127,7 @@
     "fetchModelsEndpointNotFound": "未找到可用的模型清單端點，請檢查 Base URL 或確認供應商是否開放該 API",
     "fetchModelsTimeout": "請求逾時，請檢查網路連線",
     "savedKeys": "備用 API Key",
+    "crossAppSharedKeysHint": "此 Key 清單由 Claude 與 Codex 的同一供應商共用；雙方仍可獨立選擇目前的 Key。刪除另一應用程式正在使用的 Key 前，請先在該應用程式中切換。",
     "keyLabelPlaceholder": "標籤（可選，例如: Key A - opus）",
     "saveKey": "儲存",
     "noSavedKeysHint": "在上方輸入 API Key 後，可點擊「儲存」將其加入 Key 清單，支援多個 Key 之間手動切換。"

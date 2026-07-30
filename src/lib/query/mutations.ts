@@ -11,6 +11,11 @@ import { openclawKeys } from "@/hooks/useOpenClaw";
 import { invalidateHermesProviderCaches } from "@/hooks/useHermes";
 import { usageKeys } from "@/lib/query/usage";
 
+const providerMutationQueryKey = (appId: AppId) =>
+  appId === "claude" || appId === "codex"
+    ? (["providers"] as const)
+    : (["providers", appId] as const);
+
 export const useAddProviderMutation = (appId: AppId) => {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
@@ -70,7 +75,9 @@ export const useAddProviderMutation = (appId: AppId) => {
       return newProvider;
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await queryClient.invalidateQueries({
+        queryKey: providerMutationQueryKey(appId),
+      });
 
       if (appId === "opencode") {
         await queryClient.invalidateQueries({
@@ -143,7 +150,9 @@ export const useUpdateProviderMutation = (appId: AppId) => {
       return provider;
     },
     onSuccess: async (provider, variables) => {
-      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await queryClient.invalidateQueries({
+        queryKey: providerMutationQueryKey(appId),
+      });
       await queryClient.invalidateQueries({
         queryKey: usageKeys.script(provider.id, appId),
       });
@@ -190,7 +199,9 @@ export const useDeleteProviderMutation = (appId: AppId) => {
       await providersApi.delete(providerId, appId);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await queryClient.invalidateQueries({
+        queryKey: providerMutationQueryKey(appId),
+      });
 
       if (appId === "opencode") {
         await queryClient.invalidateQueries({
@@ -256,7 +267,9 @@ export const useSwitchProviderMutation = (appId: AppId) => {
       return await providersApi.switch(providerId, appId);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await queryClient.invalidateQueries({
+        queryKey: providerMutationQueryKey(appId),
+      });
       if (appId === "claude-desktop") {
         await queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
         await queryClient.invalidateQueries({

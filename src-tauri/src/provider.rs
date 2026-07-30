@@ -6,6 +6,10 @@ use std::collections::HashMap;
 
 // SSOT 模式：不再写供应商副本文件
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// 供应商结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Provider {
@@ -420,6 +424,21 @@ pub struct ProviderMeta {
     /// 当前选中的 Key ID（对应 api_keys 中的某个 id）
     #[serde(rename = "selectedKeyId", skip_serializing_if = "Option::is_none")]
     pub selected_key_id: Option<String>,
+    /// 中央 Key 池当前关联的应用（仅 DAO 读取时注入，不持久化到 providers.meta）。
+    #[serde(
+        default,
+        rename = "sharedKeyApps",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub shared_key_apps: Vec<String>,
+    /// 标记 apiKeys 来自中央池，允许新客户端把列表作为权威更新提交回来。
+    /// 仅 DAO 读取时注入，保存前必须清除，避免旧客户端误清空共享池。
+    #[serde(
+        default,
+        rename = "sharedKeyPoolLoaded",
+        skip_serializing_if = "is_false"
+    )]
+    pub shared_key_pool_loaded: bool,
     /// 自定义端点列表（按 URL 去重存储）
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub custom_endpoints: HashMap<String, crate::settings::CustomEndpoint>,

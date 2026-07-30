@@ -45,6 +45,38 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        // Claude/Codex 跨应用中央 Key 池。Key 列表只存一份，供应商各自继续在
+        // providers.meta.selectedKeyId 中保存当前选择。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS shared_key_groups (
+                id TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+            CREATE TABLE IF NOT EXISTS shared_api_keys (
+                id TEXT PRIMARY KEY,
+                group_id TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                key_value TEXT NOT NULL,
+                sort_index INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(group_id, key_value),
+                FOREIGN KEY (group_id) REFERENCES shared_key_groups(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_shared_api_keys_group
+                ON shared_api_keys(group_id, sort_index);
+            CREATE TABLE IF NOT EXISTS provider_shared_key_links (
+                provider_id TEXT NOT NULL,
+                app_type TEXT NOT NULL CHECK (app_type IN ('claude','codex')),
+                group_id TEXT NOT NULL,
+                PRIMARY KEY (provider_id, app_type),
+                FOREIGN KEY (provider_id, app_type)
+                    REFERENCES providers(id, app_type) ON DELETE CASCADE,
+                FOREIGN KEY (group_id) REFERENCES shared_key_groups(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_provider_shared_key_group
+                ON provider_shared_key_links(group_id);",
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
         // 2. Provider Endpoints 表
         conn.execute(
             "CREATE TABLE IF NOT EXISTS provider_endpoints (
@@ -443,6 +475,11 @@ impl Database {
                         log::info!("迁移数据库从 v10 到 v11（usage_daily_rollups 保留 request_model 维度）");
                         Self::migrate_v10_to_v11(conn)?;
                         Self::set_user_version(conn, 11)?;
+                    }
+                    11 => {
+                        log::info!("迁移数据库从 v11 到 v12（Claude/Codex 共享中央 Key 池）");
+                        Self::migrate_v11_to_v12(conn)?;
+                        Self::set_user_version(conn, 12)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1267,6 +1304,15 @@ impl Database {
         log::info!(
             "v10 -> v11 迁移完成：usage_daily_rollups 已保留 request_model/pricing_model 维度"
         );
+        Ok(())
+    }
+
+    /// v11 -> v12：将 Claude/Codex providers.meta.apiKeys 非破坏性迁移到中央池。
+    /// 相同供应商按“规范化名称相同 OR API 根域名相同”自动合并；每个供应商的
+    /// selectedKeyId 保留在自己的 meta 中，并在去重后重写为中央 Key ID。
+    fn migrate_v11_to_v12(conn: &Connection) -> Result<(), AppError> {
+        Self::migrate_provider_keys_to_shared_pools(conn)?;
+        log::info!("v11 -> v12 迁移完成：Claude/Codex API Key 已集中存储并去重");
         Ok(())
     }
 

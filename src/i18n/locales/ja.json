@@ -1155,6 +1155,7 @@
     "fetchModelsEndpointNotFound": "利用可能なモデル一覧エンドポイントが見つかりません。Base URL を確認するか、プロバイダーが該当 API を公開しているかご確認ください",
     "fetchModelsTimeout": "リクエストがタイムアウトしました。ネットワーク接続を確認してください",
     "savedKeys": "保存済み API Key",
+    "crossAppSharedKeysHint": "この Key リストは Claude と Codex の同じプロバイダーで共有され、使用する Key は各アプリで個別に選択できます。もう一方のアプリが使用中の Key を削除する前に、そのアプリで Key を切り替えてください。",
     "keyLabelPlaceholder": "ラベル（任意、例: Key A - opus）",
     "saveKey": "保存",
     "noSavedKeysHint": "上記で API Key を入力後、「保存」をクリックして Key リストに追加すると、複数 Key を手動で切り替えられます。"

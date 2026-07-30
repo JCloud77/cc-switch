@@ -1,3 +1,4 @@
+use crate::database::dao::shared_keys::SharedKeySaveInput;
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::provider::{Provider, ProviderMeta};
@@ -101,6 +102,7 @@ impl Database {
             if let Some(meta) = &mut provider.meta {
                 meta.custom_endpoints = custom_endpoints;
             }
+            Self::hydrate_shared_keys_for_provider(&conn, app_type, &mut provider)?;
 
             providers.insert(id, provider);
         }
@@ -171,7 +173,10 @@ impl Database {
         );
 
         match result {
-            Ok(provider) => Ok(Some(provider)),
+            Ok(mut provider) => {
+                Self::hydrate_shared_keys_for_provider(&conn, app_type, &mut provider)?;
+                Ok(Some(provider))
+            }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(AppError::Database(e.to_string())),
         }
@@ -185,6 +190,18 @@ impl Database {
 
         let mut meta_clone = provider.meta.clone().unwrap_or_default();
         let endpoints = std::mem::take(&mut meta_clone.custom_endpoints);
+        let shared_key_input = if Self::app_supports_shared_keys(app_type) {
+            let input = SharedKeySaveInput {
+                keys: std::mem::take(&mut meta_clone.api_keys),
+                selected_key_id: meta_clone.selected_key_id.clone(),
+                pool_loaded: meta_clone.shared_key_pool_loaded,
+            };
+            meta_clone.shared_key_apps.clear();
+            meta_clone.shared_key_pool_loaded = false;
+            Some(input)
+        } else {
+            None
+        };
 
         let existing: Option<(bool, bool)> = tx
             .query_row(
@@ -273,6 +290,15 @@ impl Database {
             }
         }
 
+        if let Some(input) = shared_key_input {
+            Self::sync_shared_keys_after_provider_save(
+                &tx,
+                &provider.id,
+                app_type,
+                input,
+            )?;
+        }
+
         tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
     }
@@ -284,6 +310,7 @@ impl Database {
             params![id, app_type],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+        Self::cleanup_orphaned_shared_key_groups(&conn)?;
         Ok(())
     }
 

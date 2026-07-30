@@ -187,8 +187,12 @@ export interface ApiKeyEntry {
 export interface ProviderMeta {
   // 备用 API Key 列表（支持多 Key 手动切换）
   apiKeys?: ApiKeyEntry[];
-  // 当前选中的 Key ID
+  // 当前选中的 Key ID（Claude/Codex 各供应商独立选择）
   selectedKeyId?: string;
+  // 中央 Key 池关联的应用；后端读取时注入，保存时不写回 providers.meta
+  sharedKeyApps?: string[];
+  // 标记 apiKeys 来自中央池，供后端安全识别权威列表更新
+  sharedKeyPoolLoaded?: boolean;
   // 自定义端点：以 URL 为键，值为端点信息
   custom_endpoints?: Record<string, CustomEndpoint>;
   // 是否在切换/同步到 live 时应用通用配置片段
