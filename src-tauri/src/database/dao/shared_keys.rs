@@ -912,7 +912,7 @@ mod tests {
             "env": {"ANTHROPIC_BASE_URL": "https://claude.example.com/v1"}
         });
         let codex = json!({
-            "config": "[model_providers.test]\nbase_url = \"https://api.example.com/v1\"\n"
+            "config": "model_provider = \"test\"\n\n[model_providers.test]\nbase_url = \"https://api.example.com/v1\"\n"
         });
         assert_eq!(
             provider_root_domain("claude", &claude).as_deref(),
