@@ -218,7 +218,9 @@ impl Database {
                 &mut final_keys,
                 &mut key_indexes,
                 &mut used_ids,
-                existing_keys.iter().filter(|key| group_ids.contains(&key.group_id)),
+                existing_keys
+                    .iter()
+                    .filter(|key| group_ids.contains(&key.group_id)),
             );
             merge_api_keys(
                 &mut final_keys,
@@ -257,12 +259,7 @@ impl Database {
                     &mut used_ids,
                     row.meta.api_keys.clone(),
                 );
-                merge_active_key(
-                    &mut final_keys,
-                    &mut key_indexes,
-                    &mut used_ids,
-                    row,
-                );
+                merge_active_key(&mut final_keys, &mut key_indexes, &mut used_ids, row);
             }
         }
 
@@ -305,9 +302,7 @@ impl Database {
 
     /// v11 -> v12 data migration: centralize every existing Claude/Codex key
     /// list, merging connected providers by normalized name or root domain.
-    pub(crate) fn migrate_provider_keys_to_shared_pools(
-        conn: &Connection,
-    ) -> Result<(), AppError> {
+    pub(crate) fn migrate_provider_keys_to_shared_pools(conn: &Connection) -> Result<(), AppError> {
         let rows = load_provider_key_rows(conn)?;
         if rows.is_empty() {
             return Ok(());
@@ -347,7 +342,9 @@ impl Database {
                 &mut final_keys,
                 &mut key_indexes,
                 &mut used_ids,
-                existing_keys.iter().filter(|key| group_ids.contains(&key.group_id)),
+                existing_keys
+                    .iter()
+                    .filter(|key| group_ids.contains(&key.group_id)),
             );
             for index in component {
                 merge_api_keys(
@@ -363,8 +360,7 @@ impl Database {
                     &rows[*index],
                 );
             }
-            let selection_values =
-                build_selection_values(&rows, component, &old_key_by_id, None);
+            let selection_values = build_selection_values(&rows, component, &old_key_by_id, None);
             apply_component_pool(
                 conn,
                 &rows,
@@ -379,9 +375,7 @@ impl Database {
         Ok(())
     }
 
-    pub(crate) fn cleanup_orphaned_shared_key_groups(
-        conn: &Connection,
-    ) -> Result<(), AppError> {
+    pub(crate) fn cleanup_orphaned_shared_key_groups(conn: &Connection) -> Result<(), AppError> {
         conn.execute(
             "DELETE FROM shared_key_groups
              WHERE NOT EXISTS (
@@ -395,11 +389,7 @@ impl Database {
     }
 }
 
-fn shared_key_strategy(
-    app_type: &str,
-    meta: &ProviderMeta,
-    settings: &Value,
-) -> &'static str {
+fn shared_key_strategy(app_type: &str, meta: &ProviderMeta, settings: &Value) -> &'static str {
     match app_type {
         "codex" => "bearer",
         "claude"
@@ -553,10 +543,10 @@ fn root_domain_from_host(host: &str) -> Option<String> {
     // Common multi-label public suffixes used by supported providers. Keeping
     // this local avoids adding a lockfile-changing dependency in the desktop app.
     const MULTI_LABEL_SUFFIXES: &[&str] = &[
-        "ac.cn", "com.cn", "edu.cn", "gov.cn", "net.cn", "org.cn", "co.uk",
-        "me.uk", "net.uk", "org.uk", "com.au", "net.au", "org.au", "co.jp",
-        "ne.jp", "or.jp", "com.hk", "net.hk", "org.hk", "com.tw", "net.tw",
-        "org.tw", "co.nz", "com.br", "com.sg", "com.my", "co.kr", "co.in",
+        "ac.cn", "com.cn", "edu.cn", "gov.cn", "net.cn", "org.cn", "co.uk", "me.uk", "net.uk",
+        "org.uk", "com.au", "net.au", "org.au", "co.jp", "ne.jp", "or.jp", "com.hk", "net.hk",
+        "org.hk", "com.tw", "net.tw", "org.tw", "co.nz", "com.br", "com.sg", "com.my", "co.kr",
+        "co.in",
     ];
     // Multi-tenant hosting suffixes must retain the tenant label to avoid
     // sharing keys between unrelated customers.
@@ -584,11 +574,15 @@ fn root_domain_from_host(host: &str) -> Option<String> {
 fn build_old_key_by_id(rows: &[ProviderKeyRow], stored: &[StoredKey]) -> HashMap<String, String> {
     let mut values = HashMap::new();
     for key in stored {
-        values.entry(key.id.clone()).or_insert_with(|| key.key.clone());
+        values
+            .entry(key.id.clone())
+            .or_insert_with(|| key.key.clone());
     }
     for row in rows {
         for key in &row.meta.api_keys {
-            values.entry(key.id.clone()).or_insert_with(|| key.key.clone());
+            values
+                .entry(key.id.clone())
+                .or_insert_with(|| key.key.clone());
         }
     }
     values
@@ -820,7 +814,10 @@ mod tests {
 
     #[test]
     fn root_domain_handles_subdomains_country_suffixes_and_tenants() {
-        assert_eq!(root_domain_from_host("api.example.com").as_deref(), Some("example.com"));
+        assert_eq!(
+            root_domain_from_host("api.example.com").as_deref(),
+            Some("example.com")
+        );
         assert_eq!(
             root_domain_from_host("claude.example.com.cn").as_deref(),
             Some("example.com.cn")
@@ -829,13 +826,22 @@ mod tests {
             root_domain_from_host("tenant.github.io").as_deref(),
             Some("tenant.github.io")
         );
-        assert_eq!(root_domain_from_host("127.0.0.1").as_deref(), Some("127.0.0.1"));
+        assert_eq!(
+            root_domain_from_host("127.0.0.1").as_deref(),
+            Some("127.0.0.1")
+        );
     }
 
     #[test]
     fn normalized_names_ignore_outer_space_and_case() {
-        assert_eq!(normalize_provider_name("  RunAway  ").as_deref(), Some("runaway"));
-        assert_eq!(normalize_provider_name("  随时跑路  ").as_deref(), Some("随时跑路"));
+        assert_eq!(
+            normalize_provider_name("  RunAway  ").as_deref(),
+            Some("runaway")
+        );
+        assert_eq!(
+            normalize_provider_name("  随时跑路  ").as_deref(),
+            Some("随时跑路")
+        );
     }
 
     #[test]
@@ -934,12 +940,8 @@ mod tests {
         keys: Vec<ApiKeyEntry>,
         selected_key_id: &str,
     ) -> Provider {
-        let mut provider = Provider::with_id(
-            id.to_string(),
-            name.to_string(),
-            settings_config,
-            None,
-        );
+        let mut provider =
+            Provider::with_id(id.to_string(), name.to_string(), settings_config, None);
         provider.meta = Some(ProviderMeta {
             api_keys: keys,
             selected_key_id: Some(selected_key_id.to_string()),
@@ -995,7 +997,9 @@ mod tests {
         assert_eq!(claude_meta.api_keys.len(), 3);
         assert_eq!(codex_meta.api_keys.len(), 3);
         assert_eq!(
-            claude_meta.resolve_selected_key().map(|selected| selected.0),
+            claude_meta
+                .resolve_selected_key()
+                .map(|selected| selected.0),
             Some("sk-a")
         );
         assert_eq!(
@@ -1014,11 +1018,8 @@ mod tests {
         assert_eq!(codex_meta.shared_key_apps, vec!["claude", "codex"]);
 
         let conn = crate::database::lock_conn!(db.conn);
-        let central_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM shared_api_keys",
-            [],
-            |row| row.get(0),
-        )?;
+        let central_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM shared_api_keys", [], |row| row.get(0))?;
         let raw_meta: String = conn.query_row(
             "SELECT meta FROM providers WHERE id = 'claude-provider' AND app_type = 'claude'",
             [],
@@ -1075,7 +1076,9 @@ mod tests {
         assert_eq!(claude_meta.api_keys.len(), 2);
         assert_eq!(codex_meta.api_keys.len(), 2);
         assert_eq!(
-            claude_meta.resolve_selected_key().map(|selected| selected.0),
+            claude_meta
+                .resolve_selected_key()
+                .map(|selected| selected.0),
             Some("sk-legacy-a")
         );
         assert_eq!(
@@ -1121,9 +1124,7 @@ mod tests {
         let err = db
             .save_provider("claude", &claude)
             .expect_err("linked selected key deletion must fail");
-        assert!(
-            err.to_string().contains("Codex") || err.to_string().contains("codex")
-        );
+        assert!(err.to_string().contains("Codex") || err.to_string().contains("codex"));
         Ok(())
     }
 }

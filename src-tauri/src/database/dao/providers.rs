@@ -291,12 +291,7 @@ impl Database {
         }
 
         if let Some(input) = shared_key_input {
-            Self::sync_shared_keys_after_provider_save(
-                &tx,
-                &provider.id,
-                app_type,
-                input,
-            )?;
+            Self::sync_shared_keys_after_provider_save(&tx, &provider.id, app_type, input)?;
         }
 
         tx.commit().map_err(|e| AppError::Database(e.to_string()))?;

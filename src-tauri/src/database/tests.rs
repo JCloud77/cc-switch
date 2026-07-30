@@ -372,8 +372,7 @@ fn shared_keys_migration_v11_to_v12_centralizes_and_deduplicates() {
         params![
             "claude-provider",
             " Same Vendor ",
-            json!({"env": {"ANTHROPIC_BASE_URL": "https://claude.vendor.example"}})
-                .to_string(),
+            json!({"env": {"ANTHROPIC_BASE_URL": "https://claude.vendor.example"}}).to_string(),
             claude_meta.to_string()
         ],
     )
