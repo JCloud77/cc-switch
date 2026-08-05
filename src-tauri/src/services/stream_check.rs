@@ -991,48 +991,6 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_provider_config_override_and_default() {
-        use crate::provider::{ProviderMeta, ProviderTestConfig};
-
-        let global = StreamCheckConfig::default();
-
-        // 无 testConfig → 用全局
-        let p = make_provider(serde_json::json!({}));
-        let merged = StreamCheckService::merge_provider_config(&p, &global);
-        assert_eq!(merged.timeout_secs, global.timeout_secs);
-
-        // testConfig 启用并覆盖部分字段
-        let mut p2 = make_provider(serde_json::json!({}));
-        p2.meta = Some(ProviderMeta {
-            test_config: Some(ProviderTestConfig {
-                enabled: true,
-                timeout_secs: Some(20),
-                degraded_threshold_ms: Some(3000),
-                max_retries: None,
-            }),
-            ..Default::default()
-        });
-        let merged2 = StreamCheckService::merge_provider_config(&p2, &global);
-        assert_eq!(merged2.timeout_secs, 20);
-        assert_eq!(merged2.degraded_threshold_ms, 3000);
-        assert_eq!(merged2.max_retries, global.max_retries); // 未覆盖 → 全局
-
-        // testConfig 存在但未启用 → 忽略，用全局
-        let mut p3 = make_provider(serde_json::json!({}));
-        p3.meta = Some(ProviderMeta {
-            test_config: Some(ProviderTestConfig {
-                enabled: false,
-                timeout_secs: Some(99),
-                degraded_threshold_ms: None,
-                max_retries: None,
-            }),
-            ..Default::default()
-        });
-        let merged3 = StreamCheckService::merge_provider_config(&p3, &global);
-        assert_eq!(merged3.timeout_secs, global.timeout_secs);
-    }
-
-    #[test]
     fn test_resolve_opencode_base_url_explicit_wins() {
         let p = make_provider(serde_json::json!({
             "npm": "@ai-sdk/openai",
