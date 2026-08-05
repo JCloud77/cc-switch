@@ -378,7 +378,7 @@ fn schema_migration_v4_adds_pricing_model_columns() {
 }
 
 #[test]
-fn shared_keys_migration_v11_to_v12_centralizes_and_deduplicates() {
+fn shared_keys_migration_from_local_v12_to_v17_centralizes_and_deduplicates() {
     let conn = Connection::open_in_memory().expect("open db");
     conn.execute("PRAGMA foreign_keys = ON", [])
         .expect("enable foreign keys");
@@ -420,7 +420,10 @@ fn shared_keys_migration_v11_to_v12_centralizes_and_deduplicates() {
         ],
     )
     .expect("insert Codex provider");
-    Database::set_user_version(&conn, 11).expect("set user_version=11");
+    // Local v3.16.5 used Schema v12 for shared keys while upstream later reused
+    // v12 for Profiles. Starting at 12 verifies that create_tables + v12..v17
+    // safely upgrades an existing local database without losing its key lists.
+    Database::set_user_version(&conn, 12).expect("set local user_version=12");
 
     Database::apply_schema_migrations_on_conn(&conn).expect("migrate to current schema");
 

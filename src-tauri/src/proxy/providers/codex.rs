@@ -1253,6 +1253,31 @@ wire_api = "anthropic"
     }
 
     #[test]
+    fn test_anthropic_selected_shared_key_keeps_x_api_key_strategy() {
+        let adapter = CodexAdapter::new();
+        let mut provider = create_provider(json!({
+            "apiFormat": "anthropic",
+            "auth": { "OPENAI_API_KEY": "stale-config-key" }
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("anthropic".to_string()),
+            api_key_field: Some("ANTHROPIC_API_KEY".to_string()),
+            api_keys: vec![crate::provider::ApiKeyEntry {
+                id: "shared-key".to_string(),
+                label: "Shared".to_string(),
+                key: "selected-shared-key".to_string(),
+                strategy: Some("bearer".to_string()),
+            }],
+            selected_key_id: Some("shared-key".to_string()),
+            ..Default::default()
+        });
+
+        let auth = adapter.extract_auth(&provider).unwrap();
+        assert_eq!(auth.api_key, "selected-shared-key");
+        assert_eq!(auth.strategy, AuthStrategy::Anthropic);
+    }
+
+    #[test]
     fn test_build_url_origin_adds_v1() {
         let adapter = CodexAdapter::new();
         let url = adapter.build_url("https://api.openai.com", "/responses");
@@ -1568,6 +1593,13 @@ wire_api = "responses"
         }));
         provider.meta = Some(crate::provider::ProviderMeta {
             provider_type: Some("xai_oauth".to_string()),
+            api_keys: vec![crate::provider::ApiKeyEntry {
+                id: "manual-key".to_string(),
+                label: "Must be ignored".to_string(),
+                key: "manual-shared-key".to_string(),
+                strategy: Some("bearer".to_string()),
+            }],
+            selected_key_id: Some("manual-key".to_string()),
             ..Default::default()
         });
 
