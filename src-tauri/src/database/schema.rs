@@ -20,33 +20,9 @@ impl Database {
         Self::create_tables_on_conn(&conn)
     }
 
-    /// 在指定连接上创建表（供迁移和测试使用）
-    pub(crate) fn create_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
-        // 1. Providers 表
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS providers (
-                id TEXT NOT NULL,
-                app_type TEXT NOT NULL,
-                name TEXT NOT NULL,
-                settings_config TEXT NOT NULL,
-                website_url TEXT,
-                category TEXT,
-                created_at INTEGER,
-                sort_index INTEGER,
-                notes TEXT,
-                icon TEXT,
-                icon_color TEXT,
-                meta TEXT NOT NULL DEFAULT '{}',
-                is_current BOOLEAN NOT NULL DEFAULT 0,
-                in_failover_queue BOOLEAN NOT NULL DEFAULT 0,
-                PRIMARY KEY (id, app_type)
-            )",
-            [],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        // Claude/Codex 跨应用中央 Key 池。Key 列表只存一份，供应商各自继续在
-        // providers.meta.selectedKeyId 中保存当前选择。
+    /// 幂等创建 Claude/Codex 跨应用中央 Key 池表。
+    /// 启动建表与 v16 -> v17 迁移共用，避免部分旧 schema 缺表。
+    fn create_shared_key_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS shared_key_groups (
                 id TEXT PRIMARY KEY,
@@ -76,6 +52,37 @@ impl Database {
                 ON provider_shared_key_links(group_id);",
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 在指定连接上创建表（供迁移和测试使用）
+    pub(crate) fn create_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
+        // 1. Providers 表
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS providers (
+                id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                settings_config TEXT NOT NULL,
+                website_url TEXT,
+                category TEXT,
+                created_at INTEGER,
+                sort_index INTEGER,
+                notes TEXT,
+                icon TEXT,
+                icon_color TEXT,
+                meta TEXT NOT NULL DEFAULT '{}',
+                is_current BOOLEAN NOT NULL DEFAULT 0,
+                in_failover_queue BOOLEAN NOT NULL DEFAULT 0,
+                PRIMARY KEY (id, app_type)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // Claude/Codex 跨应用中央 Key 池。Key 列表只存一份，供应商各自继续在
+        // providers.meta.selectedKeyId 中保存当前选择。
+        Self::create_shared_key_tables_on_conn(conn)?;
 
         // 2. Provider Endpoints 表
         conn.execute(
@@ -1565,6 +1572,13 @@ impl Database {
     /// selectedKeyId 保留在自己的 meta 中，并在去重后重写为中央 Key ID。
     /// 该迁移保持幂等，以兼容曾使用本地 Schema v12 的数据库。
     fn migrate_v16_to_v17(conn: &Connection) -> Result<(), AppError> {
+        // 上游迁移单测会构造只包含目标表的部分 schema；这类连接没有
+        // providers 时没有可迁移数据，应安全跳过。真实应用启动时 providers
+        // 一定存在，随后幂等补齐中央池表并迁移已有 Key。
+        if !Self::table_exists(conn, "providers")? {
+            return Ok(());
+        }
+        Self::create_shared_key_tables_on_conn(conn)?;
         Self::migrate_provider_keys_to_shared_pools(conn)?;
         log::info!("v16 -> v17 迁移完成：Claude/Codex API Key 已集中存储并去重");
         Ok(())
@@ -3269,7 +3283,7 @@ mod tests {
 
         Database::apply_schema_migrations_on_conn(&conn)?;
 
-        assert_eq!(Database::get_user_version(&conn)?, 16);
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
         let counts: (i64, i64, i64, i64) = conn.query_row(
             "SELECT
                 (SELECT COUNT(*) FROM proxy_request_logs WHERE data_source = 'codex_session'),
