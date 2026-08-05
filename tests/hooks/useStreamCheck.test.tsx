@@ -1,11 +1,11 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useStreamCheck } from "@/hooks/useStreamCheck";
-import type { StreamCheckResult } from "@/lib/api/model-test";
+import type { StreamCheckResult } from "@/lib/api/connectivity-check";
 
 const streamCheckProviderMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/api/model-test", () => ({
+vi.mock("@/lib/api/connectivity-check", () => ({
   streamCheckProvider: (...args: unknown[]) => streamCheckProviderMock(...args),
 }));
 
