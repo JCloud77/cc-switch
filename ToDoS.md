@@ -7,7 +7,8 @@
   - [x] 已创建安全备份分支 `backup/upstream-v3.16.5-before-v3.19.1` 和升级分支 `upgrade/upstream-v3.19.1`，合并官方 `v3.19.1`；冲突按用户确认采用 Schema v17、xAI OAuth→共享 Key→配置鉴权顺序、保留双阶段真实 Agent 测试及双方功能合并策略处理。
   - [x] 已逐项核查并保留全部本地魔改；共享 Key 迁移调整为幂等 v16→v17，并补充旧本地 v12 升级、Codex Anthropic 共享 Key 鉴权及 xAI OAuth 优先级测试。
   - [x] 已通过四语言 JSON 校验、`typecheck`、89 个测试文件共 594 项前端单测及 renderer production build。
-  - [ ] 待推送升级分支并由 GitHub Actions Windows runner 执行 Rust formatting、Clippy、单测与 exe 构建，再做 Windows 实机迁移及全部本地魔改回归验证。
+  - [x] GitHub Actions Windows Manual Build 已在提交 `ee72045e` 上通过前端检查、Rust formatting、Clippy、共享 Key 专项测试、完整 Rust 单测及 exe 构建（run `30986918022`，artifact `8923358674`）。
+  - [ ] 待 Windows 实机执行数据库 v12→v17 迁移及全部本地魔改回归验证；验证通过后再考虑合并回私有 `main` 和更新现有安装。
 
 - [ ] 新增 Claude/Codex 跨应用共享供应商 Key：当两个应用中的供应商 API 地址主域名相同，或供应商名称忽略首尾空格与大小写后相同时，自动视为同一供应商；使用中央 Key 池只保存一份 Key，首次关联时合并双方现有 Key 并按完整 Key 值精确去重、同值优先保留非空标签；Claude 与 Codex 共享 Key 列表但分别保存当前选中 Key，确保测试、代理转发、Live 配置、导入导出与 WebDAV/S3 云同步继续正确工作，并通过非破坏性数据库迁移兼容已有多 Key 数据。
   - [x] 已新增 Schema v12 中央 Key 池、供应商关联表与非破坏性迁移；兼容旧 `apiKeys`/`selectedKeyId` 及仅存在于当前配置中的活动 Key。
