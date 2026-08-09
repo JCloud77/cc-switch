@@ -10,6 +10,10 @@ import { useProviderTestStatus } from "@/contexts/ProviderTestStatusContext";
 
 export type { ProviderTestStatus } from "@/contexts/ProviderTestStatusContext";
 
+interface StreamCheckOptions {
+  silent?: boolean;
+}
+
 /**
  * 供应商连通性检查。
  *
@@ -31,6 +35,7 @@ export function useStreamCheck(appId: AppId) {
     async (
       providerId: string,
       providerName: string,
+      options: StreamCheckOptions = {},
     ): Promise<StreamCheckResult | null> => {
       setChecking(appId, providerId, true);
 
@@ -38,64 +43,68 @@ export function useStreamCheck(appId: AppId) {
         const result = await streamCheckProvider(appId, providerId);
         setStatus(appId, providerId, result.success ? "success" : "failed");
 
-        if (result.status === "operational") {
-          toast.success(
-            t("streamCheck.reachable", {
-              providerName: providerName,
-              responseTimeMs: result.responseTimeMs,
-              defaultValue: `${providerName} 连通正常 (${result.responseTimeMs}ms)`,
-            }),
-            { closeButton: true },
-          );
-        } else if (result.status === "degraded") {
-          toast.warning(
-            t("streamCheck.reachableSlow", {
-              providerName: providerName,
-              responseTimeMs: result.responseTimeMs,
-              defaultValue: `${providerName} 连通但较慢 (${result.responseTimeMs}ms)`,
-            }),
-          );
-        } else {
-          const isAgentProbeFailure =
-            result.errorCategory?.startsWith("agent_");
-          toast.error(
-            t(
-              isAgentProbeFailure
-                ? "streamCheck.agentProbeFailed"
-                : "streamCheck.unreachable",
-              {
+        if (!options.silent) {
+          if (result.status === "operational") {
+            toast.success(
+              t("streamCheck.reachable", {
                 providerName: providerName,
-                message: result.message,
-                defaultValue: `${providerName} 检测未通过: ${result.message}`,
-              },
-            ),
-            {
-              description: t(
+                responseTimeMs: result.responseTimeMs,
+                defaultValue: `${providerName} 连通正常 (${result.responseTimeMs}ms)`,
+              }),
+              { closeButton: true },
+            );
+          } else if (result.status === "degraded") {
+            toast.warning(
+              t("streamCheck.reachableSlow", {
+                providerName: providerName,
+                responseTimeMs: result.responseTimeMs,
+                defaultValue: `${providerName} 连通但较慢 (${result.responseTimeMs}ms)`,
+              }),
+            );
+          } else {
+            const isAgentProbeFailure =
+              result.errorCategory?.startsWith("agent_");
+            toast.error(
+              t(
                 isAgentProbeFailure
-                  ? "streamCheck.agentProbeHint"
-                  : "streamCheck.unreachableHint",
+                  ? "streamCheck.agentProbeFailed"
+                  : "streamCheck.unreachable",
                 {
-                  defaultValue: isAgentProbeFailure
-                    ? "Base URL 可达，但模拟 Claude/Codex agent 的最小真实请求失败。请检查 API Key、模型名、协议格式或供应商客户端限制。"
-                    : "无法建立连接（DNS / 连接 / TLS / 超时）。请检查 base_url 与网络。",
+                  providerName: providerName,
+                  message: result.message,
+                  defaultValue: `${providerName} 检测未通过: ${result.message}`,
                 },
               ),
-              duration: 8000,
-              closeButton: true,
-            },
-          );
+              {
+                description: t(
+                  isAgentProbeFailure
+                    ? "streamCheck.agentProbeHint"
+                    : "streamCheck.unreachableHint",
+                  {
+                    defaultValue: isAgentProbeFailure
+                      ? "Base URL 可达，但模拟 Claude/Codex agent 的最小真实请求失败。请检查 API Key、模型名、协议格式或供应商客户端限制。"
+                      : "无法建立连接（DNS / 连接 / TLS / 超时）。请检查 base_url 与网络。",
+                  },
+                ),
+                duration: 8000,
+                closeButton: true,
+              },
+            );
+          }
         }
 
         return result;
       } catch (e) {
         setStatus(appId, providerId, "failed");
-        toast.error(
-          t("streamCheck.error", {
-            providerName: providerName,
-            error: String(e),
-            defaultValue: `${providerName} 检查出错: ${String(e)}`,
-          }),
-        );
+        if (!options.silent) {
+          toast.error(
+            t("streamCheck.error", {
+              providerName: providerName,
+              error: String(e),
+              defaultValue: `${providerName} 检查出错: ${String(e)}`,
+            }),
+          );
+        }
         return null;
       } finally {
         setChecking(appId, providerId, false);

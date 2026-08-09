@@ -104,6 +104,8 @@
     "testAll": "Test all providers",
     "testingAll": "Testing all...",
     "testAllHint": "Test every testable provider in this app",
+    "testAllSummary": "Test complete: {{successCount}} passed, {{failedCount}} failed ({{durationMs}}ms)",
+    "testAllFailedProviders": "Failed providers: {{providerNames}}",
     "tabProvider": "Provider",
     "tabUniversal": "Universal",
     "noProviders": "No providers added yet",

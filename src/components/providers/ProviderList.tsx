@@ -50,6 +50,9 @@ import { useCallback } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { isTextEditableTarget } from "@/utils/domUtils";
+import { mapWithConcurrency } from "@/lib/utils/mapWithConcurrency";
+
+const PROVIDER_TEST_CONCURRENCY = 3;
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -226,16 +229,46 @@ export function ProviderList({
     }
 
     setIsTestingAll(true);
+    const startedAt = performance.now();
     try {
-      await Promise.all(
-        testableProviders.map((provider) =>
-          checkProvider(provider.id, provider.name),
-        ),
+      const results = await mapWithConcurrency(
+        testableProviders,
+        PROVIDER_TEST_CONCURRENCY,
+        (provider) =>
+          checkProvider(provider.id, provider.name, { silent: true }),
       );
+      const failedProviders = testableProviders.filter(
+        (_provider, index) => results[index]?.success !== true,
+      );
+      const successCount = testableProviders.length - failedProviders.length;
+      const durationMs = Math.round(performance.now() - startedAt);
+      const summary = t("provider.testAllSummary", {
+        successCount,
+        failedCount: failedProviders.length,
+        durationMs,
+        defaultValue: `Test complete: ${successCount} passed, ${failedProviders.length} failed (${durationMs}ms)`,
+      });
+
+      if (failedProviders.length > 0) {
+        toast.warning(summary, {
+          description: t("provider.testAllFailedProviders", {
+            providerNames: failedProviders
+              .map((provider) => provider.name)
+              .join(", "),
+            defaultValue: `Failed: ${failedProviders
+              .map((provider) => provider.name)
+              .join(", ")}`,
+          }),
+          duration: 8000,
+          closeButton: true,
+        });
+      } else {
+        toast.success(summary, { closeButton: true });
+      }
     } finally {
       setIsTestingAll(false);
     }
-  }, [checkProvider, isCheckingAny, isTestingAll, testableProviders]);
+  }, [checkProvider, isCheckingAny, isTestingAll, t, testableProviders]);
 
   // Import current live config as default provider
   const queryClient = useQueryClient();

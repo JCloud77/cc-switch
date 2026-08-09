@@ -104,6 +104,8 @@
     "testAll": "すべてのプロバイダーをテスト",
     "testingAll": "すべてテスト中...",
     "testAllHint": "このアプリのテスト可能なすべてのプロバイダーをテストします",
+    "testAllSummary": "テスト完了：成功 {{successCount}} 件、失敗 {{failedCount}} 件（{{durationMs}}ms）",
+    "testAllFailedProviders": "失敗したプロバイダー：{{providerNames}}",
     "tabProvider": "プロバイダー",
     "tabUniversal": "統一プロバイダー",
     "noProviders": "まだプロバイダーがありません",

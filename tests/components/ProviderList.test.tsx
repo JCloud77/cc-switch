@@ -15,9 +15,16 @@ const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
 const providerCardRenderSpy = vi.fn();
 const checkProviderMock = vi.fn();
+const toastMocks = vi.hoisted(() => ({
+  success: vi.fn(),
+  warning: vi.fn(),
+  error: vi.fn(),
+}));
 const isCheckingMock = vi.fn();
 const getTestStatusMock = vi.fn();
 let isCheckingAnyMock = false;
+
+vi.mock("sonner", () => ({ toast: toastMocks }));
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
@@ -138,6 +145,9 @@ beforeEach(() => {
   providerCardRenderSpy.mockClear();
   checkProviderMock.mockReset();
   checkProviderMock.mockResolvedValue(null);
+  toastMocks.success.mockReset();
+  toastMocks.warning.mockReset();
+  toastMocks.error.mockReset();
   isCheckingMock.mockReset();
   isCheckingMock.mockReturnValue(false);
   getTestStatusMock.mockReset();
@@ -328,8 +338,12 @@ describe("ProviderList Component", () => {
     fireEvent.click(screen.getByRole("button", { name: "Test all providers" }));
 
     expect(checkProviderMock).toHaveBeenCalledTimes(2);
-    expect(checkProviderMock).toHaveBeenCalledWith("a", "Provider A");
-    expect(checkProviderMock).toHaveBeenCalledWith("b", "Provider B");
+    expect(checkProviderMock).toHaveBeenCalledWith("a", "Provider A", {
+      silent: true,
+    });
+    expect(checkProviderMock).toHaveBeenCalledWith("b", "Provider B", {
+      silent: true,
+    });
     expect(checkProviderMock).not.toHaveBeenCalledWith(
       "official",
       "Official Provider",
@@ -343,6 +357,69 @@ describe("ProviderList Component", () => {
       pending.get("b")?.({ status: "failed", success: false });
     });
 
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Test all providers" }),
+      ).toBeEnabled(),
+    );
+    expect(toastMocks.success).not.toHaveBeenCalled();
+    expect(toastMocks.error).not.toHaveBeenCalled();
+    expect(toastMocks.warning).toHaveBeenCalledWith(
+      expect.stringContaining("1 passed, 1 failed"),
+      expect.objectContaining({
+        description: expect.stringContaining("Provider B"),
+      }),
+    );
+  });
+
+  it("starts at most three provider checks concurrently", async () => {
+    const providers = Array.from({ length: 5 }, (_, index) =>
+      createProvider({ id: `p${index}`, name: `Provider ${index}` }),
+    );
+    const pending: Array<(value: unknown) => void> = [];
+    checkProviderMock.mockImplementation(
+      () => new Promise((resolve) => pending.push(resolve)),
+    );
+    useDragSortMock.mockReturnValue({
+      sortedProviders: providers,
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={Object.fromEntries(
+          providers.map((provider) => [provider.id, provider]),
+        )}
+        currentProviderId=""
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Test all providers" }));
+    expect(checkProviderMock).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      pending.shift()?.({ status: "operational", success: true });
+    });
+    await waitFor(() => expect(checkProviderMock).toHaveBeenCalledTimes(4));
+
+    await act(async () => {
+      pending.shift()?.({ status: "operational", success: true });
+    });
+    await waitFor(() => expect(checkProviderMock).toHaveBeenCalledTimes(5));
+
+    await act(async () => {
+      const remaining = pending.splice(0);
+      remaining.forEach((resolve) =>
+        resolve({ status: "operational", success: true }),
+      );
+    });
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Test all providers" }),

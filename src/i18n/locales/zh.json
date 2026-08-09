@@ -104,6 +104,8 @@
     "testAll": "测试全部供应商",
     "testingAll": "正在测试全部...",
     "testAllHint": "测试该应用下所有可测试的供应商",
+    "testAllSummary": "测试完成：{{successCount}} 个成功，{{failedCount}} 个失败（{{durationMs}}ms）",
+    "testAllFailedProviders": "失败供应商：{{providerNames}}",
     "tabProvider": "供应商",
     "tabUniversal": "统一供应商",
     "noProviders": "还没有添加任何供应商",
