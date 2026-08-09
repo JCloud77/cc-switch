@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useCallback } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import {
@@ -6,8 +6,9 @@ import {
   type StreamCheckResult,
 } from "@/lib/api/connectivity-check";
 import type { AppId } from "@/lib/api";
+import { useProviderTestStatus } from "@/contexts/ProviderTestStatusContext";
 
-export type ProviderTestStatus = "success" | "failed";
+export type { ProviderTestStatus } from "@/contexts/ProviderTestStatusContext";
 
 /**
  * 供应商连通性检查。
@@ -18,23 +19,24 @@ export type ProviderTestStatus = "success" | "failed";
  */
 export function useStreamCheck(appId: AppId) {
   const { t } = useTranslation();
-  const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set());
-  const [testStatuses, setTestStatuses] = useState<
-    Map<string, ProviderTestStatus>
-  >(new Map());
+  const {
+    setChecking,
+    setStatus,
+    isChecking: getIsChecking,
+    isCheckingAny: getIsCheckingAny,
+    getStatus,
+  } = useProviderTestStatus();
 
   const checkProvider = useCallback(
     async (
       providerId: string,
       providerName: string,
     ): Promise<StreamCheckResult | null> => {
-      setCheckingIds((prev) => new Set(prev).add(providerId));
+      setChecking(appId, providerId, true);
 
       try {
         const result = await streamCheckProvider(appId, providerId);
-        setTestStatuses((prev) =>
-          new Map(prev).set(providerId, result.success ? "success" : "failed"),
-        );
+        setStatus(appId, providerId, result.success ? "success" : "failed");
 
         if (result.status === "operational") {
           toast.success(
@@ -86,7 +88,7 @@ export function useStreamCheck(appId: AppId) {
 
         return result;
       } catch (e) {
-        setTestStatuses((prev) => new Map(prev).set(providerId, "failed"));
+        setStatus(appId, providerId, "failed");
         toast.error(
           t("streamCheck.error", {
             providerName: providerName,
@@ -96,30 +98,26 @@ export function useStreamCheck(appId: AppId) {
         );
         return null;
       } finally {
-        setCheckingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(providerId);
-          return next;
-        });
+        setChecking(appId, providerId, false);
       }
     },
-    [appId, t],
+    [appId, setChecking, setStatus, t],
   );
 
   const isChecking = useCallback(
-    (providerId: string) => checkingIds.has(providerId),
-    [checkingIds],
+    (providerId: string) => getIsChecking(appId, providerId),
+    [appId, getIsChecking],
   );
 
   const getTestStatus = useCallback(
-    (providerId: string) => testStatuses.get(providerId),
-    [testStatuses],
+    (providerId: string) => getStatus(appId, providerId),
+    [appId, getStatus],
   );
 
   return {
     checkProvider,
     isChecking,
-    isCheckingAny: checkingIds.size > 0,
+    isCheckingAny: getIsCheckingAny(appId),
     getTestStatus,
   };
 }

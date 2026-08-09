@@ -12,12 +12,12 @@
   - [ ] 评估官方 `main` 上尚未随版本发布的提交 `413c09e`（生成 Codex 模型目录时尊重用户自管的 `model_catalog_json`）：本地 Codex 通配映射同样写入 catalog，需判断是否一并 cherry-pick，避免覆盖用户自定义目录路径。
   - [ ] 完成 `pnpm typecheck`、`format:check`、`test:unit`、`build:renderer` 与 GitHub Actions Windows Manual Build（`run_checks=true`、`run_rust_tests=true`）；最后做 Windows 实机回归。
 
-- [ ] 修复测试状态图标在切换应用标签页后被重置：当前 `src/App.tsx` 中 `<AnimatePresence mode="wait">` 下的 `<motion.div key={activeApp}>` 会在切换应用标签时整体卸载并重建 `ProviderList`，而 `useStreamCheck` 的 `testStatuses` 与 `checkingIds` 是组件内 `useState`，因此切走再切回、或进入设置/MCP 等非供应商面板后返回，全部测试结果都会退回“未测试”。
-  - [ ] 新建 `src/contexts/ProviderTestStatusContext.tsx`，沿用仓库既有 `UpdateContext` 的 Context 模式，在 `src/main.tsx` 中与 `UpdateProvider` 同层挂载于路由/面板切换之上，使状态不随 `ProviderList` 卸载而丢失。
-  - [ ] 状态键必须按应用作用域，使用 `${appId}:${providerId}` 组合键：供应商主键是 `(id, app_type)`，不同应用可能存在相同的供应商 id，不加作用域会跨应用串台。
-  - [ ] 同时上提进行中的 `checkingIds`，使切走再切回时仍能看到加载状态，并避免组件卸载后 `finally` 的状态更新丢失。
-  - [ ] 保持仅内存存储、不落库，维持原需求“应用重启后恢复未测试状态”；为已删除供应商的陈旧条目提供清理方式（按当前列表过滤或暴露 clear API）。
-  - [ ] 更新 `tests/hooks/useStreamCheck.test.tsx`、`tests/components/ProviderList.test.tsx` 的 mock，并新增覆盖“卸载重挂载后状态保留”“跨应用不串台”的测试。
+- [x] 修复测试状态图标在切换应用标签页后被重置：当前 `src/App.tsx` 中 `<AnimatePresence mode="wait">` 下的 `<motion.div key={activeApp}>` 会在切换应用标签时整体卸载并重建 `ProviderList`，而 `useStreamCheck` 的 `testStatuses` 与 `checkingIds` 都是组件内 `useState`，因此切走再切回、或进入设置/MCP 等非供应商面板后返回，全部测试结果都会退回“未测试”。
+  - [x] 新建 `src/contexts/ProviderTestStatusContext.tsx`，沿用仓库既有 `UpdateContext` 的 Context 模式，在 `src/main.tsx` 中与 `UpdateProvider` 同层挂载于路由/面板切换之上，使状态不随 `ProviderList` 卸载而丢失。
+  - [x] 状态键按应用作用域使用 `${appId}:${providerId}` 组合键，避免不同应用中的同名供应商 id 串台。
+  - [x] 同时上提进行中的 `checkingIds`，切走再切回时仍能看到加载状态，且异步 `finally` 可更新仍然挂载的 Context。
+  - [x] 状态仅存内存、不落库，维持“应用重启后恢复未测试状态”；已删除供应商的陈旧状态不会被当前列表读取或展示。
+  - [x] 更新 `useStreamCheck` 测试包装器，并新增覆盖“消费者卸载重挂载后结果及加载状态保留”“跨应用不串台”的 Context 测试；定向 typecheck 与4项测试通过。
 
 - [ ] 为“一键测试全部供应商”增加并发限流与提示聚合：当前 `src/components/providers/ProviderList.tsx` 的 `handleTestAll` 使用 `Promise.all` 全并发，供应商较多时会同时发起大量探测请求，并逐个弹出 toast 刷屏。
   - [ ] 实现固定并发上限的 worker 池（建议上限 3，定义为常量），不引入新依赖（仓库当前无 p-limit 等限流库）。

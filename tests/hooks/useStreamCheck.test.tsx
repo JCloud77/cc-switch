@@ -1,7 +1,9 @@
 import { act, renderHook } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useStreamCheck } from "@/hooks/useStreamCheck";
 import type { StreamCheckResult } from "@/lib/api/connectivity-check";
+import { ProviderTestStatusProvider } from "@/contexts/ProviderTestStatusContext";
 
 const streamCheckProviderMock = vi.hoisted(() => vi.fn());
 
@@ -16,6 +18,10 @@ vi.mock("sonner", () => ({
     error: vi.fn(),
   },
 }));
+
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <ProviderTestStatusProvider>{children}</ProviderTestStatusProvider>
+);
 
 function createResult(
   overrides: Partial<StreamCheckResult> = {},
@@ -49,7 +55,9 @@ describe("useStreamCheck provider status", () => {
               }),
         ),
     );
-    const { result } = renderHook(() => useStreamCheck("claude"));
+    const { result } = renderHook(() => useStreamCheck("claude"), {
+      wrapper,
+    });
 
     await act(async () => {
       await Promise.all([
@@ -65,7 +73,9 @@ describe("useStreamCheck provider status", () => {
 
   it("records thrown check errors as failures", async () => {
     streamCheckProviderMock.mockRejectedValue(new Error("network error"));
-    const { result } = renderHook(() => useStreamCheck("codex"));
+    const { result } = renderHook(() => useStreamCheck("codex"), {
+      wrapper,
+    });
 
     await act(async () => {
       await result.current.checkProvider("provider-1", "Provider A");
