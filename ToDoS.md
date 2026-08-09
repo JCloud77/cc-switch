@@ -11,7 +11,9 @@
   - [ ] 回归官方 v3.19.2 新行为与本地魔改的交叉点：代理缓冲响应体 128MiB 上限不影响本地 agent 最小真实探测请求；MCP/Skills 批量开关（串行写 live 配置）与本地“一键测试全部供应商”在同一列表页共存且互不阻塞；Codex 用量导入批量提交在本地 v17 数据库上可正常执行一次手动重建。
   - [x] 已评估官方 `main` 上尚未随版本发布的提交 `413c09e`：为保持本次升级严格对应正式标签 `v3.19.2`，暂不混入未发布提交，后续可作为独立修复评估。
   - [x] 已通过 i18n JSON/新增语言键校验、`typecheck`、`format:check`、105个测试文件共713项前端单测及 production renderer build。
-  - [ ] 待 GitHub Actions Windows Manual Build（`run_checks=true`、`run_rust_tests=true`）通过后做 Windows 实机回归。
+  - [x] 首轮 Windows CI 暴露官方备份 BLOB 保真测试与本地 v17 共享 Key 迁移的交叉问题：已让迁移只处理 TEXT JSON 行、对非文本 provider 配置保留原值并安全跳过，同时新增回归测试。
+  - [x] GitHub Actions Windows Manual Build 已在提交 `77827e0a` 上通过前端检查、Rust formatting、Clippy、共享 Key 专项测试、完整 Rust 单测及 exe 构建（run `31322930444`，artifact `9041088565`）。
+  - [ ] 待 Windows 实机回归 v12→v17 迁移、全部本地魔改，以及 v3.19.2 的 Codex 用量重建和首次 WebDAV/S3 同步。
 
 - [x] 修复测试状态图标在切换应用标签页后被重置：当前 `src/App.tsx` 中 `<AnimatePresence mode="wait">` 下的 `<motion.div key={activeApp}>` 会在切换应用标签时整体卸载并重建 `ProviderList`，而 `useStreamCheck` 的 `testStatuses` 与 `checkingIds` 都是组件内 `useState`，因此切走再切回、或进入设置/MCP 等非供应商面板后返回，全部测试结果都会退回“未测试”。
   - [x] 新建 `src/contexts/ProviderTestStatusContext.tsx`，沿用仓库既有 `UpdateContext` 的 Context 模式，在 `src/main.tsx` 中与 `UpdateProvider` 同层挂载于路由/面板切换之上，使状态不随 `ProviderList` 卸载而丢失。
