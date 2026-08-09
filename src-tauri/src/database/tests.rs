@@ -460,6 +460,43 @@ fn shared_keys_migration_from_local_v12_to_v17_centralizes_and_deduplicates() {
 }
 
 #[test]
+fn shared_keys_migration_preserves_non_text_provider_configs() {
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create current tables");
+    conn.execute(
+        "INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES ('blob-provider', 'claude', 'Blob Provider', X'00FF10', '{}')",
+        [],
+    )
+    .expect("insert provider with blob config");
+    Database::set_user_version(&conn, 16).expect("set user_version=16");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate to current schema");
+
+    let config: Vec<u8> = conn
+        .query_row(
+            "SELECT settings_config FROM providers WHERE id = 'blob-provider'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read preserved blob config");
+    assert_eq!(config, vec![0x00, 0xFF, 0x10]);
+    let link_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM provider_shared_key_links
+             WHERE provider_id = 'blob-provider'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count shared key links");
+    assert_eq!(link_count, 0);
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version after migration"),
+        SCHEMA_VERSION
+    );
+}
+
+#[test]
 fn migration_v10_to_v11_rebuilds_rollups_with_request_model_dimension() {
     let conn = Connection::open_in_memory().expect("open memory db");
 

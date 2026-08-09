@@ -408,6 +408,9 @@ fn shared_key_strategy(app_type: &str, meta: &ProviderMeta, settings: &Value) ->
 }
 
 fn load_provider_key_rows(conn: &Connection) -> Result<Vec<ProviderKeyRow>, AppError> {
+    // SQLite can preserve non-TEXT values even in TEXT-affinity columns (for example
+    // a byte-for-byte SQL backup containing a BLOB). Such rows are not valid provider
+    // JSON and must be preserved untouched rather than blocking the whole migration.
     let mut stmt = conn
         .prepare(
             "SELECT providers.id, providers.app_type, providers.name,
@@ -417,6 +420,8 @@ fn load_provider_key_rows(conn: &Connection) -> Result<Vec<ProviderKeyRow>, AppE
                ON links.provider_id = providers.id
               AND links.app_type = providers.app_type
              WHERE providers.app_type IN ('claude', 'codex')
+               AND typeof(providers.settings_config) = 'text'
+               AND typeof(providers.meta) = 'text'
              ORDER BY providers.app_type ASC, providers.id ASC",
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
