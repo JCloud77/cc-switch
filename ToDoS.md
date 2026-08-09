@@ -3,6 +3,29 @@
 
 ## 未完成
 
+- [ ] 将本地魔改分支从官方 `v3.19.1` 升级适配到官方 `v3.19.2`（标签提交 `43eaf073`，发布于 2026-08-06）：以 `upgrade/upstream-v3.19.1` 最新提交 `4d1ff494` 为基线创建备份分支 `backup/upstream-v3.19.1-before-v3.19.2` 与升级分支 `upgrade/upstream-v3.19.2`，合并官方 `v3.19.2` 并完整保留全部本地魔改；官方本版无 schema 迁移（上游 `SCHEMA_VERSION` 仍为 16），本地必须继续保持 v17 及 `migrate_v16_to_v17`。
+  - [ ] 合并前已用 `git merge-tree --write-tree HEAD v3.19.2` 试合并验证：**零文本冲突**；官方改动 114 个文件，与本地魔改重叠仅 10 个，其中 6 个为实质代码文件。
+  - [ ] 合并后逐项语义复核重叠文件：`database/mod.rs` 的 `SCHEMA_VERSION` 保持 17；`database/schema.rs` 仅吸收官方新增的 `qwen3.8-max` 定价种子，本地 v16→v17 迁移与 `assert_eq!(..., SCHEMA_VERSION)` 断言不得被回退为 16；`database/tests.rs` 确认官方将 `V3_8_SCHEMA_V1_SQL` 改为 `pub(super)` 后新测试模块仍可引用；`provider.rs` 确认官方新增的 `claude_uses_api_key_field()` 依赖的 `meta.api_key_field` 字段在本地结构体中仍存在。
+  - [ ] 重点复核 `proxy/forwarder.rs`：官方在 Copilot 分支新增 `strip_one_m_suffix_for_upstream_from_body` 的 `[1M]` 剥离，位置距本地 Codex `apply_codex_model_catalog_mapping` 分支仅约 20 行；需确认本地 Codex 通配/别名映射分支没有绕过官方的 `[1m]` 处理，并补充或更新对应 Rust 单测。
+  - [ ] 合并四语言 `src/i18n/locales/{zh,en,ja,zh-TW}.json`：官方新增管理面板搜索、批量应用开关、认证中心订阅用量文案，本地新增测试状态图标与一键测试文案；合并后跑 JSON 校验与四语言键一致性检查。
+  - [ ] 回归官方 v3.19.2 新行为与本地魔改的交叉点：代理缓冲响应体 128MiB 上限不影响本地 agent 最小真实探测请求；MCP/Skills 批量开关（串行写 live 配置）与本地“一键测试全部供应商”在同一列表页共存且互不阻塞；Codex 用量导入批量提交在本地 v17 数据库上可正常执行一次手动重建。
+  - [ ] 评估官方 `main` 上尚未随版本发布的提交 `413c09e`（生成 Codex 模型目录时尊重用户自管的 `model_catalog_json`）：本地 Codex 通配映射同样写入 catalog，需判断是否一并 cherry-pick，避免覆盖用户自定义目录路径。
+  - [ ] 完成 `pnpm typecheck`、`format:check`、`test:unit`、`build:renderer` 与 GitHub Actions Windows Manual Build（`run_checks=true`、`run_rust_tests=true`）；最后做 Windows 实机回归。
+
+- [ ] 修复测试状态图标在切换应用标签页后被重置：当前 `src/App.tsx` 中 `<AnimatePresence mode="wait">` 下的 `<motion.div key={activeApp}>` 会在切换应用标签时整体卸载并重建 `ProviderList`，而 `useStreamCheck` 的 `testStatuses` 与 `checkingIds` 是组件内 `useState`，因此切走再切回、或进入设置/MCP 等非供应商面板后返回，全部测试结果都会退回“未测试”。
+  - [ ] 新建 `src/contexts/ProviderTestStatusContext.tsx`，沿用仓库既有 `UpdateContext` 的 Context 模式，在 `src/main.tsx` 中与 `UpdateProvider` 同层挂载于路由/面板切换之上，使状态不随 `ProviderList` 卸载而丢失。
+  - [ ] 状态键必须按应用作用域，使用 `${appId}:${providerId}` 组合键：供应商主键是 `(id, app_type)`，不同应用可能存在相同的供应商 id，不加作用域会跨应用串台。
+  - [ ] 同时上提进行中的 `checkingIds`，使切走再切回时仍能看到加载状态，并避免组件卸载后 `finally` 的状态更新丢失。
+  - [ ] 保持仅内存存储、不落库，维持原需求“应用重启后恢复未测试状态”；为已删除供应商的陈旧条目提供清理方式（按当前列表过滤或暴露 clear API）。
+  - [ ] 更新 `tests/hooks/useStreamCheck.test.tsx`、`tests/components/ProviderList.test.tsx` 的 mock，并新增覆盖“卸载重挂载后状态保留”“跨应用不串台”的测试。
+
+- [ ] 为“一键测试全部供应商”增加并发限流与提示聚合：当前 `src/components/providers/ProviderList.tsx` 的 `handleTestAll` 使用 `Promise.all` 全并发，供应商较多时会同时发起大量探测请求，并逐个弹出 toast 刷屏。
+  - [ ] 实现固定并发上限的 worker 池（建议上限 3，定义为常量），不引入新依赖（仓库当前无 p-limit 等限流库）。
+  - [ ] 为 `useStreamCheck.checkProvider` 增加批量/静默模式参数，在一键测试期间抑制逐条成功与“较慢”提示，避免刷屏；每张卡片的状态图标本身已提供逐供应商反馈。
+  - [ ] 批量结束后弹出一条汇总 toast：成功数、失败数、总耗时，失败供应商名称放入 description；失败明细不得被完全吞掉。
+  - [ ] 新增并同步四语言文案（如 `provider.testAllSummary`），保留现有的重复触发防护与按钮禁用逻辑。
+  - [ ] 补充测试：并发不超过上限、批量模式下不逐条弹 toast、汇总结果计数正确。
+
 - [ ] 将当前本地魔改分支从官方 `v3.16.5` 升级适配到官方最新 `v3.19.1`：以 `upgrade/upstream-v3.16.5` 最新提交为基线创建安全备份和独立升级分支，合并官方 `v3.19.1`，完整保留 agent 风格供应商探测、一键测试全部供应商及状态图标、Codex 模型别名与通配映射、多 API Key 管理、Claude/Codex 跨应用共享 Key 池、Windows 手动构建流程等全部本地魔改；若合并出现需要内容取舍的冲突，暂停并征询用户意见；完成前端检查、Windows runner Rust/编译构建验证及 Windows 实机验证。
   - [x] 已创建安全备份分支 `backup/upstream-v3.16.5-before-v3.19.1` 和升级分支 `upgrade/upstream-v3.19.1`，合并官方 `v3.19.1`；冲突按用户确认采用 Schema v17、xAI OAuth→共享 Key→配置鉴权顺序、保留双阶段真实 Agent 测试及双方功能合并策略处理。
   - [x] 已逐项核查并保留全部本地魔改；共享 Key 迁移调整为幂等 v16→v17，并补充旧本地 v12 升级、Codex Anthropic 共享 Key 鉴权及 xAI OAuth 优先级测试。
