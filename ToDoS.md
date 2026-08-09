@@ -10,7 +10,8 @@
   - [x] 合并四语言 `src/i18n/locales/{zh,en,ja,zh-TW}.json`：官方新增管理面板搜索、批量应用开关、认证中心订阅用量文案，本地新增测试状态图标与一键测试文案；合并后跑 JSON 校验与四语言键一致性检查。
   - [ ] 回归官方 v3.19.2 新行为与本地魔改的交叉点：代理缓冲响应体 128MiB 上限不影响本地 agent 最小真实探测请求；MCP/Skills 批量开关（串行写 live 配置）与本地“一键测试全部供应商”在同一列表页共存且互不阻塞；Codex 用量导入批量提交在本地 v17 数据库上可正常执行一次手动重建。
   - [x] 已评估官方 `main` 上尚未随版本发布的提交 `413c09e`：为保持本次升级严格对应正式标签 `v3.19.2`，暂不混入未发布提交，后续可作为独立修复评估。
-  - [ ] 完成 `pnpm typecheck`、`format:check`、`test:unit`、`build:renderer` 与 GitHub Actions Windows Manual Build（`run_checks=true`、`run_rust_tests=true`）；最后做 Windows 实机回归。
+  - [x] 已通过 i18n JSON/新增语言键校验、`typecheck`、`format:check`、105个测试文件共713项前端单测及 production renderer build。
+  - [ ] 待 GitHub Actions Windows Manual Build（`run_checks=true`、`run_rust_tests=true`）通过后做 Windows 实机回归。
 
 - [x] 修复测试状态图标在切换应用标签页后被重置：当前 `src/App.tsx` 中 `<AnimatePresence mode="wait">` 下的 `<motion.div key={activeApp}>` 会在切换应用标签时整体卸载并重建 `ProviderList`，而 `useStreamCheck` 的 `testStatuses` 与 `checkingIds` 都是组件内 `useState`，因此切走再切回、或进入设置/MCP 等非供应商面板后返回，全部测试结果都会退回“未测试”。
   - [x] 新建 `src/contexts/ProviderTestStatusContext.tsx`，沿用仓库既有 `UpdateContext` 的 Context 模式，在 `src/main.tsx` 中与 `UpdateProvider` 同层挂载于路由/面板切换之上，使状态不随 `ProviderList` 卸载而丢失。
