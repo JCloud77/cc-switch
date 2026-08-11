@@ -354,11 +354,7 @@ fn replace_file_windows_compat(
     // original until the replacement is known to be in place.
     if !path.exists() || !tmp.exists() {
         return Err(AppError::IoContext {
-            context: format!(
-                "兼容替换失败: {} -> {}",
-                tmp.display(),
-                path.display()
-            ),
+            context: format!("兼容替换失败: {} -> {}", tmp.display(), path.display()),
             source: direct_error,
         });
     }
