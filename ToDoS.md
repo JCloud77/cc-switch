@@ -3,6 +3,8 @@
 
 ## 未完成
 
+- [ ] 修复 Windows 版 v3.19.2 对 WSL/UNC 配置路径的全局写入回归：官方将所有受管配置的原子写入改为 `ReplaceFileW`，但 `\\wsl.localhost\...` 文件系统不支持该 API 并返回 `ERROR_NOT_SUPPORTED`（os error 50），导致 Grok Build、Claude、Codex 等复用 `config.rs::atomic_write` 的配置均无法修改；应在保留本地 NTFS `ReplaceFileW` 原子路径的同时，为不支持替换语义的文件系统提供带原文件恢复保障的兼容回退，补充单元测试并通过 Windows 完整 CI。
+
 - [ ] 将本地魔改分支从官方 `v3.19.1` 升级适配到官方 `v3.19.2`（标签提交 `43eaf073`，发布于 2026-08-06）：以 `upgrade/upstream-v3.19.1` 最新提交 `4d1ff494` 为基线创建备份分支 `backup/upstream-v3.19.1-before-v3.19.2` 与升级分支 `upgrade/upstream-v3.19.2`，合并官方 `v3.19.2` 并完整保留全部本地魔改；官方本版无 schema 迁移（上游 `SCHEMA_VERSION` 仍为 16），本地必须继续保持 v17 及 `migrate_v16_to_v17`。
   - [x] 合并前已用 `git merge-tree --write-tree HEAD v3.19.2` 试合并验证：**零文本冲突**；正式合并同样无冲突。官方改动 114 个文件，与本地魔改重叠仅 10 个，其中 6 个为实质代码文件。
   - [x] 合并后逐项语义复核重叠文件：`database/mod.rs` 的 `SCHEMA_VERSION` 保持 17；`database/schema.rs` 仅吸收官方新增的 `qwen3.8-max` 定价种子，本地 v16→v17 迁移与 `assert_eq!(..., SCHEMA_VERSION)` 断言不得被回退为 16；`database/tests.rs` 确认官方将 `V3_8_SCHEMA_V1_SQL` 改为 `pub(super)` 后新测试模块仍可引用；`provider.rs` 确认官方新增的 `claude_uses_api_key_field()` 依赖的 `meta.api_key_field` 字段在本地结构体中仍存在。

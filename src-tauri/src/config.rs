@@ -323,6 +323,92 @@ pub fn write_text_file(path: &Path, data: &str) -> Result<(), AppError> {
     atomic_write(path, data.as_bytes())
 }
 
+#[cfg(windows)]
+fn windows_replace_file_is_unsupported(source: &std::io::Error) -> bool {
+    // ERROR_NOT_SUPPORTED. WSL's \\wsl.localhost UNC provider accepts ordinary
+    // file operations but does not implement ReplaceFileW.
+    source.kind() == std::io::ErrorKind::Unsupported || source.raw_os_error() == Some(50)
+}
+
+#[cfg(windows)]
+fn replace_file_windows_compat(
+    path: &Path,
+    tmp: &Path,
+    replace_error: &std::io::Error,
+) -> Result<(), AppError> {
+    log::warn!(
+        "ReplaceFileW is unsupported for {}; falling back to compatible rename: {}",
+        path.display(),
+        replace_error
+    );
+
+    // Some remote providers support replace-through-rename even though they reject
+    // ReplaceFileW. This remains atomic when the provider implements that primitive.
+    let direct_error = match fs::rename(tmp, path) {
+        Ok(()) => return Ok(()),
+        Err(source) => source,
+    };
+
+    // If replace-through-rename is also unsupported, move the original aside first.
+    // Unlike the pre-v3.19.2 remove-then-rename sequence, this keeps a recoverable
+    // original until the replacement is known to be in place.
+    if !path.exists() || !tmp.exists() {
+        return Err(AppError::IoContext {
+            context: format!(
+                "兼容替换失败: {} -> {}",
+                tmp.display(),
+                path.display()
+            ),
+            source: direct_error,
+        });
+    }
+
+    let tmp_name = tmp
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cc-switch-config.tmp");
+    let backup = tmp.with_file_name(format!("{tmp_name}.original"));
+    fs::rename(path, &backup).map_err(|source| AppError::IoContext {
+        context: format!(
+            "兼容替换无法保留原文件: {} -> {}",
+            path.display(),
+            backup.display()
+        ),
+        source,
+    })?;
+
+    match fs::rename(tmp, path) {
+        Ok(()) => {
+            if let Err(source) = fs::remove_file(&backup) {
+                log::warn!(
+                    "Failed to remove atomic-write compatibility backup {}: {}",
+                    backup.display(),
+                    source
+                );
+            }
+            Ok(())
+        }
+        Err(replacement_error) => match fs::rename(&backup, path) {
+            Ok(()) => Err(AppError::IoContext {
+                context: format!(
+                    "兼容替换失败，原文件已恢复: {} -> {}",
+                    tmp.display(),
+                    path.display()
+                ),
+                source: replacement_error,
+            }),
+            Err(restore_error) => Err(AppError::IoContext {
+                context: format!(
+                    "兼容替换失败且无法自动恢复；原文件保留在 {}；替换错误: {}",
+                    backup.display(),
+                    replacement_error
+                ),
+                source: restore_error,
+            }),
+        },
+    }
+}
+
 /// 原子写入：写入临时文件后 rename 替换，避免半写状态
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
@@ -420,6 +506,13 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
             }
 
             let replace_error = std::io::Error::last_os_error();
+            if windows_replace_file_is_unsupported(&replace_error) {
+                let result = replace_file_windows_compat(path, &tmp, &replace_error);
+                if result.is_err() {
+                    let _ = fs::remove_file(&tmp);
+                }
+                return result;
+            }
             if replace_error.kind() != std::io::ErrorKind::NotFound {
                 last_error = Some(replace_error);
                 break;
@@ -471,6 +564,33 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_replace_file_detects_wsl_not_supported_error() {
+        let source = std::io::Error::from_raw_os_error(50);
+        assert!(windows_replace_file_is_unsupported(&source));
+        assert!(!windows_replace_file_is_unsupported(
+            &std::io::Error::from_raw_os_error(5)
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_compat_replace_keeps_new_contents_and_cleans_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let tmp = dir.path().join("config.toml.tmp.test");
+        std::fs::write(&path, b"old contents").unwrap();
+        std::fs::write(&tmp, b"new contents").unwrap();
+        let source = std::io::Error::from_raw_os_error(50);
+
+        replace_file_windows_compat(&path, &tmp, &source).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new contents");
+        assert!(!tmp.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
 
     #[cfg(windows)]
     #[test]
