@@ -3,7 +3,9 @@
 
 ## 未完成
 
-- [ ] 修复 Windows 版 v3.19.2 对 WSL/UNC 配置路径的全局写入回归：官方将所有受管配置的原子写入改为 `ReplaceFileW`，但 `\\wsl.localhost\...` 文件系统不支持该 API 并返回 `ERROR_NOT_SUPPORTED`（os error 50），导致 Grok Build、Claude、Codex 等复用 `config.rs::atomic_write` 的配置均无法修改；应在保留本地 NTFS `ReplaceFileW` 原子路径的同时，为不支持替换语义的文件系统提供带原文件恢复保障的兼容回退，补充单元测试并通过 Windows 完整 CI。
+- [x] 修复 Windows 版 v3.19.2 对 WSL/UNC 配置路径的全局写入回归：官方将所有受管配置的原子写入改为 `ReplaceFileW`，但 `\\wsl.localhost\...` 文件系统不支持该 API并返回 `ERROR_NOT_SUPPORTED`（os error 50），导致 Grok Build、Claude、Codex 等复用 `config.rs::atomic_write` 的配置均无法修改。
+  - [x] 本地 NTFS 继续优先使用 `ReplaceFileW`；错误50时先回退到覆盖式 rename，不支持时再以“原文件改名保留→放入新文件→失败自动恢复”完成兼容替换，恢复失败会明确报告原文件备份位置。
+  - [x] 新增 Windows 错误50识别、兼容替换和既有文件锁定保护测试；GitHub Actions run `31499983749` 已通过 Rust formatting、Clippy、共享 Key 专项测试、完整 Rust 单测及 exe 构建，artifact `9105459055`。
 
 - [ ] 将本地魔改分支从官方 `v3.19.1` 升级适配到官方 `v3.19.2`（标签提交 `43eaf073`，发布于 2026-08-06）：以 `upgrade/upstream-v3.19.1` 最新提交 `4d1ff494` 为基线创建备份分支 `backup/upstream-v3.19.1-before-v3.19.2` 与升级分支 `upgrade/upstream-v3.19.2`，合并官方 `v3.19.2` 并完整保留全部本地魔改；官方本版无 schema 迁移（上游 `SCHEMA_VERSION` 仍为 16），本地必须继续保持 v17 及 `migrate_v16_to_v17`。
   - [x] 合并前已用 `git merge-tree --write-tree HEAD v3.19.2` 试合并验证：**零文本冲突**；正式合并同样无冲突。官方改动 114 个文件，与本地魔改重叠仅 10 个，其中 6 个为实质代码文件。
