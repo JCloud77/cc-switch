@@ -1074,11 +1074,9 @@ fn migration_repairs_local_v17_missing_official_dedup_table() {
         .expect("shared keys preserved");
     assert_eq!(keys, 1);
     let links: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM provider_shared_key_links",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM provider_shared_key_links", [], |r| {
+            r.get(0)
+        })
         .expect("provider links preserved");
     assert_eq!(links, 1);
 }

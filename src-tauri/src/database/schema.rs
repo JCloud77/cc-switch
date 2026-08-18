@@ -576,7 +576,9 @@ impl Database {
                         Self::set_user_version(conn, 17)?;
                     }
                     17 => {
-                        log::info!("迁移数据库从 v17 到 v18（Claude/Codex 共享中央 Key 池并补齐去重账本）");
+                        log::info!(
+                            "迁移数据库从 v17 到 v18（Claude/Codex 共享中央 Key 池并补齐去重账本）"
+                        );
                         Self::migrate_v17_to_v18(conn)?;
                         Self::set_user_version(conn, 18)?;
                     }
