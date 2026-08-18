@@ -1039,3 +1039,76 @@ fn ensure_incremental_auto_vacuum_rebuilds_existing_file_db() {
         "file db should persist INCREMENTAL auto_vacuum after VACUUM rebuild"
     );
 }
+
+#[test]
+fn migration_repairs_local_v17_missing_official_dedup_table() {
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create current schema");
+    // 旧本地 v17：共享 Key 已迁移，但缺少官方 v3.20.0 的 session_usage_dedup 表
+    // （官方 v17 结构）。v17->v18 必须做结构探测并补齐官方表，且共享 Key 数据保持。
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS session_usage_dedup;
+         INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES ('p', 'claude', 'P', '{\"env\":{}}', '{\"selectedKeyId\":\"k1\"}');
+         INSERT INTO shared_key_groups (id, created_at) VALUES ('g1', 1);
+         INSERT INTO shared_api_keys (id, group_id, label, key_value, sort_index)
+         VALUES ('k1', 'g1', '', 'sk-secret', 0);
+         INSERT INTO provider_shared_key_links (provider_id, app_type, group_id)
+         VALUES ('p', 'claude', 'g1');",
+    )
+    .expect("seed local v17 state without official dedup");
+    Database::set_user_version(&conn, 17).expect("set user_version=17");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate v17 -> v18");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version after migration"),
+        SCHEMA_VERSION
+    );
+    assert!(
+        Database::table_exists(&conn, "session_usage_dedup").expect("dedup repaired"),
+        "v17->v18 should rebuild the official dedup table when missing"
+    );
+    let keys: i64 = conn
+        .query_row("SELECT COUNT(*) FROM shared_api_keys", [], |r| r.get(0))
+        .expect("shared keys preserved");
+    assert_eq!(keys, 1);
+    let links: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM provider_shared_key_links",
+            [],
+            |r| r.get(0),
+        )
+        .expect("provider links preserved");
+    assert_eq!(links, 1);
+}
+
+#[test]
+fn migration_is_idempotent_at_v18() {
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create current schema");
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate to v18");
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version after first apply"),
+        SCHEMA_VERSION
+    );
+
+    // 再次 apply（模拟 v18 数据库再次启动）不应有任何副作用。
+    Database::apply_schema_migrations_on_conn(&conn).expect("reapply at v18");
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version after reapply"),
+        SCHEMA_VERSION
+    );
+    assert!(
+        Database::table_exists(&conn, "session_usage_dedup").expect("dedup present"),
+        "session_usage_dedup should exist after fresh v18 apply"
+    );
+    assert!(
+        Database::table_exists(&conn, "shared_api_keys").expect("shared keys present"),
+        "shared_api_keys should exist after fresh v18 apply"
+    );
+    assert!(
+        Database::table_exists(&conn, "provider_shared_key_links").expect("links present"),
+        "provider_shared_key_links should exist after fresh v18 apply"
+    );
+}
