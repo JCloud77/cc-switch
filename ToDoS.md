@@ -3,6 +3,14 @@
 
 ## 未完成
 
+- [ ] 将本地魔改分支从官方 `v3.19.2` 升级适配到官方 `v3.20.0`（标签提交以 `farion1231/cc-switch` 官方发布为准，发布于 2026-08-18；用户明确需求仅记录计划、暂不执行）：以 `upgrade/upstream-v3.19.2` 最新提交为基线创建备份分支 `backup/upstream-v3.19.2-before-v3.20.0` 与升级分支 `upgrade/upstream-v3.20.0`，合并官方 `v3.20.0` 并完整保留全部本地魔改；官方改动 69 commits / 284 files（+53,108 / −6,678）。
+  - [ ] 优先解决 **Schema 版本冲突**：官方 v3.20.0 首次引入 v16→v17 迁移（新增 `session_usage_dedup` 表，Pi 会话用量去重账本），而本地魔改已占用 v17（Claude/Codex 中央共享 Key 池）。需在开始实现前与用户确定口径：a) 本地升到 v18，官方 v16→v17 之后接本地 v17→v18；或 b) 将官方 v16→v17 与本地共享 Key 迁移合并进同一个幂等 v16→v17。必须保证已处于本地 v17 的用户数据库、及从官方 v16 升级的用户数据库都能安全收敛，且兼容旧本地 v12。
+  - [ ] **WSL 写入修复双份对齐**：官方 v3.20.0 也合入了 WSL `ReplaceFileW` 修复（#6232：错误50直达 rename 路径，新增真实 WSL2 CI），与本地已提交的 `config.rs` 兼容回退（#16，含原文件改名保留/边界恢复保障）重叠。合并时需核对两处实现，保留本地更安全的备份/恢复语义，避免被官方更简实现覆盖，并同步补充/更新 Rust 单测。
+  - [ ] 回归官方新行为与本地魔改交叉点：官方卡退出自动故障转移（与本地故障转移/一键测试状态图文的交集）；DeepSeek V4 峰值档重定价（看板读数约为账单 2 倍）；Kimi 上游改干净透传（不再注入占位思考块）；Codex Goals 开关移除；模型选择器改为模糊搜索组合框（可能与本地 Codex 通配/别名映射共用组件区）。
+  - [ ] 合并四语言 `src/i18n/locales/{zh,en,ja,zh-TW}.json` 与 Pi 相关文案；执行 i18n键一致性、`pnpm typecheck`、`format:check`、`test:unit`、`build:renderer`。
+  - [ ] 评估是否纳入官方 main 上 v3.20.0 之后的未发布修复（如有）；本次严格对应正式标签 `v3.20.0`。
+  - [ ] 提交并推送升级分支，触发 GitHub Actions Windows Manual Build（`run_checks=true`、`run_rust_tests=true`）通过 Rust formatting、Clippy、共享 Key 专项测试、完整 Rust 单测及 exe 构建；最终 Windows 实机回归 v12→v17（或 v18）迁移、WSL 配置写入与全部本地魔改。
+
 - [x] 修复 Windows 版 v3.19.2 对 WSL/UNC 配置路径的全局写入回归：官方将所有受管配置的原子写入改为 `ReplaceFileW`，但 `\\wsl.localhost\...` 文件系统不支持该 API并返回 `ERROR_NOT_SUPPORTED`（os error 50），导致 Grok Build、Claude、Codex 等复用 `config.rs::atomic_write` 的配置均无法修改。
   - [x] 本地 NTFS 继续优先使用 `ReplaceFileW`；错误50时先回退到覆盖式 rename，不支持时再以“原文件改名保留→放入新文件→失败自动恢复”完成兼容替换，恢复失败会明确报告原文件备份位置。
   - [x] 新增 Windows 错误50识别、兼容替换和既有文件锁定保护测试；GitHub Actions run `31499983749` 已通过 Rust formatting、Clippy、共享 Key 专项测试、完整 Rust 单测及 exe 构建，artifact `9105459055`。
