@@ -47,12 +47,23 @@ pub(crate) fn materialize_selected_shared_key(
         return Ok(());
     }
 
-    let Some((key, strategy)) = provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.resolve_selected_key())
-    else {
+    let Some(meta) = provider.meta.as_ref() else {
         return Ok(());
+    };
+    // 池是唯一真相：选中 id 解析不到条目时（例如卡片保存时同值 Key 被池合并、只留下池
+    // 自己的条目 id），回退到池中第一个条目，而不是让 live 写入静默拿不到凭据。
+    // 用户从未选择（selectedKeyId 为空）时不回退，交给调用点原有的回退语义。
+    let (key, strategy) = match meta.resolve_selected_key() {
+        Some(resolved) => resolved,
+        None => {
+            if meta.selected_key_id.is_none() {
+                return Ok(());
+            }
+            match meta.api_keys.first() {
+                Some(entry) => (entry.key.as_str(), entry.strategy.as_deref()),
+                None => return Ok(()),
+            }
+        }
     };
 
     match app_type {
