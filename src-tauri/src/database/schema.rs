@@ -1843,9 +1843,7 @@ impl Database {
     /// 只读探测：marker 与「原始池结构」矛盾时直接拒绝。
     ///
     /// 必须在 `create_shared_key_tables_on_conn` 之前调用，否则补出来的空表会掩盖损坏。
-    fn ensure_v18_pool_marker_consistent_with_raw_state(
-        conn: &Connection,
-    ) -> Result<(), AppError> {
+    fn ensure_v18_pool_marker_consistent_with_raw_state(conn: &Connection) -> Result<(), AppError> {
         if Self::shared_key_pool_columns_present(conn)? {
             return Ok(());
         }
@@ -2042,7 +2040,9 @@ impl Database {
         conn: &Connection,
     ) -> Result<Vec<(String, String, ProviderMeta)>, AppError> {
         let mut stmt = conn
-            .prepare("SELECT id, app_type, meta FROM providers WHERE app_type IN ('claude', 'codex')")
+            .prepare(
+                "SELECT id, app_type, meta FROM providers WHERE app_type IN ('claude', 'codex')",
+            )
             .map_err(|e| AppError::Database(format!("读取 provider 列表失败: {e}")))?;
         let rows = stmt
             .query_map([], |row| {
@@ -2058,9 +2058,9 @@ impl Database {
         Ok(rows
             .into_iter()
             .filter_map(|(id, app_type, meta)| match meta {
-                rusqlite::types::Value::Text(text) => {
-                    serde_json::from_str::<ProviderMeta>(&text).ok().map(|meta| (id, app_type, meta))
-                }
+                rusqlite::types::Value::Text(text) => serde_json::from_str::<ProviderMeta>(&text)
+                    .ok()
+                    .map(|meta| (id, app_type, meta)),
                 _ => None,
             })
             .collect())

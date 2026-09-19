@@ -256,9 +256,7 @@ impl Database {
     /// `backup_database_file_from_conn` 在主库文件不存在时返回 `None`，这是新装/空库的
     /// 合法结果；但只要主库文件存在，`None` 就说明安全备份没做成，此时继续覆盖会让
     /// 用户失去回滚点，因此直接拒绝（SQL 导入与 SQLite 恢复共用同一判定）。
-    fn require_safety_backup_before_replace(
-        safety_backup: Option<&Path>,
-    ) -> Result<(), AppError> {
+    fn require_safety_backup_before_replace(safety_backup: Option<&Path>) -> Result<(), AppError> {
         if safety_backup.is_some() {
             return Ok(());
         }

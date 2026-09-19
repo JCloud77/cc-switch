@@ -93,11 +93,7 @@ fn materialize_codex_key(settings: &mut Value, key: &str) -> Result<(), AppError
 }
 
 /// Claude：按池条目 strategy 决定落点，并移除另一个字段以避免网关同时收到两种认证头。
-fn materialize_claude_key(
-    settings: &mut Value,
-    key: &str,
-    field: &str,
-) -> Result<(), AppError> {
+fn materialize_claude_key(settings: &mut Value, key: &str, field: &str) -> Result<(), AppError> {
     let Some(object) = settings.as_object_mut() else {
         return Err(AppError::Config(
             "Claude 供应商配置必须是 JSON 对象，无法写入共享 Key".to_string(),
@@ -163,8 +159,12 @@ mod tests {
     }
 
     fn codex_provider(settings_config: Value, selected: Option<&str>) -> Provider {
-        let mut provider =
-            Provider::with_id("p-codex".to_string(), "Vendor".to_string(), settings_config, None);
+        let mut provider = Provider::with_id(
+            "p-codex".to_string(),
+            "Vendor".to_string(),
+            settings_config,
+            None,
+        );
         provider.meta = Some(ProviderMeta {
             api_keys: vec![key_entry("pool-key", "sk-pool")],
             selected_key_id: selected.map(ToString::to_string),
@@ -243,10 +243,7 @@ mod tests {
 
     #[test]
     fn materialize_shared_keys_skips_providers_without_selection() -> Result<(), AppError> {
-        let provider = codex_provider(
-            json!({"auth": {"OPENAI_API_KEY": "sk-old"}}),
-            None,
-        );
+        let provider = codex_provider(json!({"auth": {"OPENAI_API_KEY": "sk-old"}}), None);
         let mut settings = provider.settings_config.clone();
         materialize_selected_shared_key(&AppType::Codex, &provider, &mut settings)?;
         assert_eq!(settings["auth"]["OPENAI_API_KEY"], json!("sk-old"));
@@ -255,7 +252,10 @@ mod tests {
 
     #[test]
     fn materialize_shared_keys_ignores_unrelated_apps() -> Result<(), AppError> {
-        let provider = codex_provider(json!({"auth": {"OPENAI_API_KEY": "sk-old"}}), Some("pool-key"));
+        let provider = codex_provider(
+            json!({"auth": {"OPENAI_API_KEY": "sk-old"}}),
+            Some("pool-key"),
+        );
         let mut settings = provider.settings_config.clone();
         materialize_selected_shared_key(&AppType::Gemini, &provider, &mut settings)?;
         assert_eq!(settings["auth"]["OPENAI_API_KEY"], json!("sk-old"));
@@ -468,9 +468,14 @@ mod tests {
             "codex",
             serde_json::json!({"auth": {}, "config": config, "category": "custom"}),
         );
-        let request = request_provider(&id, serde_json::json!({"auth": {}, "config": config}), &selected);
+        let request = request_provider(
+            &id,
+            serde_json::json!({"auth": {}, "config": config}),
+            &selected,
+        );
 
-        let effective = build_effective_settings_with_common_config(&db, &AppType::Codex, &request)?;
+        let effective =
+            build_effective_settings_with_common_config(&db, &AppType::Codex, &request)?;
         let auth = effective.get("auth").expect("auth present");
         let config_text = effective.get("config").and_then(Value::as_str);
         assert_eq!(auth["OPENAI_API_KEY"], serde_json::json!("sk-from-pool"));
@@ -479,8 +484,9 @@ mod tests {
         crate::codex_config::preflight_codex_live_write(Some("custom"), auth, config_text)
             .expect("池中有 Key 的第三方配置必须通过写入预检");
 
-        let projected_text = crate::codex_config::prepare_codex_provider_live_config(auth, config_text)
-            .expect("config projection");
+        let projected_text =
+            crate::codex_config::prepare_codex_provider_live_config(auth, config_text)
+                .expect("config projection");
         assert!(
             projected_text.contains("sk-from-pool"),
             "config.toml 投影必须使用池中 Key: {projected_text}"
@@ -540,7 +546,10 @@ mod tests {
             .expect("provider");
         let effective =
             build_effective_settings_with_common_config(&db, &AppType::Claude, &stored)?;
-        assert_eq!(effective["env"]["ANTHROPIC_API_KEY"], serde_json::json!("sk-x-api-key"));
+        assert_eq!(
+            effective["env"]["ANTHROPIC_API_KEY"],
+            serde_json::json!("sk-x-api-key")
+        );
         assert!(
             effective["env"].get("ANTHROPIC_AUTH_TOKEN").is_none(),
             "两种认证字段必须互斥"
@@ -560,7 +569,10 @@ mod tests {
         );
         let effective =
             build_effective_settings_with_common_config(&db, &AppType::Gemini, &provider)?;
-        assert_eq!(effective["env"]["GEMINI_API_KEY"], serde_json::json!("sk-gemini"));
+        assert_eq!(
+            effective["env"]["GEMINI_API_KEY"],
+            serde_json::json!("sk-gemini")
+        );
         Ok(())
     }
 }

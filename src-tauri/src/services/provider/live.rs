@@ -2505,9 +2505,12 @@ mod tests {
         );
 
         // 归一化后的 provider 在 live 物化时解析出池 Key，而不是请求里的陈旧 id。
-        let effective =
-            build_effective_settings_with_common_config(state.db.as_ref(), &AppType::Claude, &stored)
-                .expect("effective settings");
+        let effective = build_effective_settings_with_common_config(
+            state.db.as_ref(),
+            &AppType::Claude,
+            &stored,
+        )
+        .expect("effective settings");
         assert_eq!(
             effective["env"]["ANTHROPIC_AUTH_TOKEN"],
             json!("sk-shared"),

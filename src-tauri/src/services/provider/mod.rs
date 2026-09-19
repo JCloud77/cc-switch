@@ -4230,10 +4230,7 @@ impl ProviderService {
         app_type: &AppType,
         provider: Provider,
     ) -> Provider {
-        match state
-            .db
-            .get_provider_by_id(&provider.id, app_type.as_str())
-        {
+        match state.db.get_provider_by_id(&provider.id, app_type.as_str()) {
             Ok(Some(persisted)) => persisted,
             Ok(None) => provider,
             Err(err) => {

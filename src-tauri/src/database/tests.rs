@@ -1485,9 +1485,13 @@ fn sync_table_has_byte_cursor_columns(conn: &Connection) -> bool {
 }
 
 fn shared_key_pool_tables_exist(conn: &Connection) -> bool {
-    ["shared_key_groups", "shared_api_keys", "provider_shared_key_links"]
-        .iter()
-        .all(|table| Database::table_exists(conn, table).unwrap_or(false))
+    [
+        "shared_key_groups",
+        "shared_api_keys",
+        "provider_shared_key_links",
+    ]
+    .iter()
+    .all(|table| Database::table_exists(conn, table).unwrap_or(false))
 }
 
 #[test]
@@ -1583,7 +1587,9 @@ fn v18_migration_from_local_v17_preserves_pool_and_selection() {
         .expect("selected key");
     assert_eq!(selected, "k2");
     let provider_meta: String = conn
-        .query_row("SELECT meta FROM providers WHERE id = 'p1'", [], |r| r.get(0))
+        .query_row("SELECT meta FROM providers WHERE id = 'p1'", [], |r| {
+            r.get(0)
+        })
         .expect("meta");
     assert!(
         !provider_meta.contains("apiKeys"),
@@ -1730,9 +1736,11 @@ fn v18_repair_applies_cursor_columns_to_stamped_local_v18() {
         .expect("pool count");
     assert_eq!(keys, 1, "已有池数据不得被重写或清空");
     let label: String = conn
-        .query_row("SELECT label FROM shared_api_keys WHERE id = 'km'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT label FROM shared_api_keys WHERE id = 'km'",
+            [],
+            |r| r.get(0),
+        )
         .expect("label preserved");
     assert_eq!(label, "machine");
 }
@@ -1768,7 +1776,9 @@ fn v18_repair_claims_complete_pool_without_resurrecting_deleted_keys() {
     };
     assert_eq!(keys, vec![("k20".to_string(), "sk-kept".to_string())]);
     let meta: String = conn
-        .query_row("SELECT meta FROM providers WHERE id = 'p20'", [], |r| r.get(0))
+        .query_row("SELECT meta FROM providers WHERE id = 'p20'", [], |r| {
+            r.get(0)
+        })
         .expect("meta");
     assert!(
         meta.contains("ua-keep"),
@@ -1831,8 +1841,8 @@ fn v18_repair_rejects_inconsistent_pool_and_rolls_back() {
     .expect("seed dangling link");
     Database::set_user_version(&conn, 18).expect("set user_version=18");
 
-    let error = Database::apply_schema_migrations_on_conn(&conn)
-        .expect_err("悬空关联必须报错而不是重建池");
+    let error =
+        Database::apply_schema_migrations_on_conn(&conn).expect_err("悬空关联必须报错而不是重建池");
     assert!(
         error.to_string().contains("不存在的分组"),
         "错误信息应指出悬空分组: {error}"
@@ -1915,7 +1925,10 @@ fn v18_repair_preserves_non_text_provider_configs() {
 #[test]
 fn v18_repair_detection_and_backup_gate() {
     // 结构探测 + 备份门禁的纯判定：有用户表的存量库在需要改写前必须先备份。
-    assert_eq!(Database::safety_backup_reason(17, 18, false, true, false), None);
+    assert_eq!(
+        Database::safety_backup_reason(17, 18, false, true, false),
+        None
+    );
     assert_eq!(
         Database::safety_backup_reason(17, 18, true, true, false).as_deref(),
         Some("v17 → v18")
@@ -1924,7 +1937,10 @@ fn v18_repair_detection_and_backup_gate() {
         Database::safety_backup_reason(18, 18, true, false, true).as_deref(),
         Some("v18 结构修复")
     );
-    assert_eq!(Database::safety_backup_reason(18, 18, true, false, false), None);
+    assert_eq!(
+        Database::safety_backup_reason(18, 18, true, false, false),
+        None
+    );
 
     // 缺字节游标列的盖章 v18 库必须被判定为「需要修复」。
     let conn = Connection::open_in_memory().expect("open db");
