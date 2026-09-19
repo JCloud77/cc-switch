@@ -103,7 +103,8 @@ impl Database {
         conn: &Connection,
         app_type: &str,
         provider: &mut Provider,
-    ) -> Result<(), AppError> {        if !Self::app_supports_shared_keys(app_type) {
+    ) -> Result<(), AppError> {
+        if !Self::app_supports_shared_keys(app_type) {
             return Ok(());
         }
 

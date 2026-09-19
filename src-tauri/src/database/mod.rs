@@ -46,6 +46,7 @@ pub use dao::Profile;
 use crate::config::get_app_config_dir;
 use crate::error::AppError;
 use rusqlite::{hooks::Action, Connection};
+use schema::SharedKeyPoolState;
 use serde::Serialize;
 use std::sync::Mutex;
 

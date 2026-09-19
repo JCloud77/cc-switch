@@ -1711,26 +1711,6 @@ impl Database {
         Ok(())
     }
 
-    /// `shared_key_pool_migrated_v18` 标记的三态。
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum SharedKeyPoolMarker {
-        /// `settings` 表或标记行不存在。
-        Absent,
-        /// 标记为假（尚未完成迁移）。
-        Pending,
-        /// 标记为真（迁移已完成）。
-        Done,
-    }
-
-    /// 共享 Key 池的迁移状态分类。
-    #[derive(Debug)]
-    enum SharedKeyPoolState {
-        CompleteWithMarker,
-        CompleteWithoutMarker,
-        LegacyUninitialized,
-        Inconsistent(String),
-    }
-
     /// 读取共享 Key 池迁移标记。
     ///
     /// 无 `settings` 表视为无 marker；标记值不可解析时报错，而不是当作「迁移已完成」。
@@ -4063,6 +4043,26 @@ impl Database {
         log::info!("已为表 {table} 添加缺失列 {column}");
         Ok(true)
     }
+}
+
+/// `shared_key_pool_migrated_v18` 标记的三态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SharedKeyPoolMarker {
+    /// `settings` 表或标记行不存在。
+    Absent,
+    /// 标记为假（尚未完成迁移）。
+    Pending,
+    /// 标记为真（迁移已完成）。
+    Done,
+}
+
+/// 共享 Key 池的迁移状态分类。
+#[derive(Debug)]
+enum SharedKeyPoolState {
+    CompleteWithMarker,
+    CompleteWithoutMarker,
+    LegacyUninitialized,
+    Inconsistent(String),
 }
 
 #[cfg(test)]
