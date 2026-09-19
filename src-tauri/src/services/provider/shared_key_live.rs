@@ -439,9 +439,13 @@ mod tests {
             build_effective_settings_with_common_config(&db, &AppType::Claude, &request)?;
 
         assert_eq!(
-            effective["env"]["ANTHROPIC_AUTH_TOKEN"],
+            effective["env"]["ANTHROPIC_API_KEY"],
             serde_json::json!("sk-from-pool"),
-            "池中选中的 Key 必须物化进内存 effective settings"
+            concat!(
+                "池中选中的 Key 必须物化进内存 effective settings",
+                "（配置无 ANTHROPIC_AUTH_TOKEN，hydrate 推导为 anthropic 策略，",
+                "落点 ANTHROPIC_API_KEY）"
+            )
         );
         assert_eq!(
             effective["env"]["ANTHROPIC_BASE_URL"],
@@ -497,8 +501,9 @@ mod tests {
     }
 
     #[test]
-    fn materialize_shared_keys_keeps_empty_codex_config_refused() -> Result<(), AppError> {
-        // 无池关联、无 Key：物化不得放宽闸门，空配置必须继续被拒。
+    fn materialize_shared_keys_never_fabricates_codex_credentials() -> Result<(), AppError> {
+        // 无池关联、无 Key 的空配置：上游对空 config 明确放行（见 plan_codex_live_write
+        // 的 `other =>` 分支），本轮的物化不得凭空塞进任何凭据改变这个语义。
         let db = Database::memory()?;
         let provider = Provider::with_id(
             "bare".to_string(),
@@ -509,48 +514,94 @@ mod tests {
         let effective =
             build_effective_settings_with_common_config(&db, &AppType::Codex, &provider)?;
         let auth = effective.get("auth").expect("auth present");
+        let key = auth.get("OPENAI_API_KEY").and_then(Value::as_str);
         assert!(
-            crate::codex_config::preflight_codex_live_write(
-                None,
-                auth,
-                effective.get("config").and_then(Value::as_str)
-            )
-            .is_err(),
-            "没有可用凭据的 Codex 配置必须仍被写入预检拒绝"
+            key.map(str::trim).unwrap_or_default().is_empty(),
+            "无池无 Key 时不得凭空物化凭据: {auth}"
         );
+        let config_text = effective.get("config").and_then(Value::as_str);
+        assert!(
+            !config_text.unwrap_or_default().contains("experimental_bearer_token"),
+            "空配置不得被物化出 bearer token: {config_text:?}"
+        );
+
+        // 反向锚点：此时若配置要求回退官方登录凭据，闸门必须拒绝。
+        let fallback = "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"https://third.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n";
+        crate::codex_config::preflight_codex_live_write(Some("custom"), auth, Some(fallback))
+            .expect_err("没有可用 Key 的第三方配置必须被写入预检拒绝");
         Ok(())
     }
 
     #[test]
     fn materialize_shared_keys_uses_pool_strategy_for_claude_fields() -> Result<(), AppError> {
+        // hydrate 会按「当前配置」重新推导 strategy（见 shared_keys.rs 的
+        // shared_key_strategy），所以两条落点必须用配置形态来区分，而不是手写 strategy。
         let db = Database::memory()?;
-        // 池条目 strategy=anthropic（x-api-key）：应写 ANTHROPIC_API_KEY 并清掉 TOKEN。
-        let mut provider = Provider::with_id(
-            "claude-anthropic".to_string(),
-            "Anthropic".to_string(),
-            serde_json::json!({"env": {"ANTHROPIC_AUTH_TOKEN": "sk-stale"}}),
+
+        // 场景 A：配置带非空 ANTHROPIC_AUTH_TOKEN → claude_auth 策略 → 落 TOKEN 并清 API_KEY。
+        let mut bearer_card = Provider::with_id(
+            "claude-token".to_string(),
+            "TokenCard".to_string(),
+            serde_json::json!({"env": {
+                "ANTHROPIC_AUTH_TOKEN": "sk-stale-token",
+                "ANTHROPIC_API_KEY": "sk-stale-key"
+            }}),
             None,
         );
-        provider.meta = Some(ProviderMeta {
+        bearer_card.meta = Some(ProviderMeta {
+            api_keys: vec![ApiKeyEntry {
+                id: "t1".to_string(),
+                label: String::new(),
+                key: "sk-token".to_string(),
+                strategy: None,
+            }],
+            selected_key_id: Some("t1".to_string()),
+            ..ProviderMeta::default()
+        });
+        db.save_provider("claude", &bearer_card)?;
+        let stored = db
+            .get_provider_by_id("claude-token", "claude")?
+            .expect("provider");
+        let effective =
+            build_effective_settings_with_common_config(&db, &AppType::Claude, &stored)?;
+        assert_eq!(
+            effective["env"]["ANTHROPIC_AUTH_TOKEN"],
+            serde_json::json!("sk-token"),
+            "Bearer 类供应商必须把池 Key 写进 ANTHROPIC_AUTH_TOKEN"
+        );
+        assert!(
+            effective["env"].get("ANTHROPIC_API_KEY").is_none(),
+            "两种认证字段必须互斥"
+        );
+
+        // 场景 B：meta.apiKeyField 显式要求 ANTHROPIC_API_KEY → anthropic 策略 → 落 API_KEY。
+        let mut api_key_card = Provider::with_id(
+            "claude-api-key".to_string(),
+            "ApiKeyCard".to_string(),
+            serde_json::json!({"env": {"ANTHROPIC_BASE_URL": "https://direct.example"}}),
+            None,
+        );
+        api_key_card.meta = Some(ProviderMeta {
+            api_key_field: Some("ANTHROPIC_API_KEY".to_string()),
             api_keys: vec![ApiKeyEntry {
                 id: "a1".to_string(),
                 label: String::new(),
                 key: "sk-x-api-key".to_string(),
-                strategy: Some("anthropic".to_string()),
+                strategy: None,
             }],
             selected_key_id: Some("a1".to_string()),
             ..ProviderMeta::default()
         });
-        db.save_provider("claude", &provider)?;
-
+        db.save_provider("claude", &api_key_card)?;
         let stored = db
-            .get_provider_by_id("claude-anthropic", "claude")?
+            .get_provider_by_id("claude-api-key", "claude")?
             .expect("provider");
         let effective =
             build_effective_settings_with_common_config(&db, &AppType::Claude, &stored)?;
         assert_eq!(
             effective["env"]["ANTHROPIC_API_KEY"],
-            serde_json::json!("sk-x-api-key")
+            serde_json::json!("sk-x-api-key"),
+            "apiKeyField 指向 ANTHROPIC_API_KEY 时必须落 API_KEY"
         );
         assert!(
             effective["env"].get("ANTHROPIC_AUTH_TOKEN").is_none(),

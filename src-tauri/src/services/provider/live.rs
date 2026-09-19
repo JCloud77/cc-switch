@@ -2463,7 +2463,10 @@ mod tests {
             )
             .expect("pool key id")
         };
-        assert_ne!(pool_key_id, "old-id", "保存应把 Key 收进池并分配新 id");
+        assert!(
+            !pool_key_id.is_empty(),
+            "首次保存必须把 Key 收进中央池（池条目沿用卡片里的条目 id，不做重编号）"
+        );
 
         // 新卡片：同一 Key 值、另一个请求 id。add_to_live=false，仅验证保存归一化。
         let incoming = {
