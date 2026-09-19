@@ -4135,11 +4135,17 @@ wire_api = "responses"
                         .get_provider_by_id(&before.id, app)
                         .unwrap()
                         .unwrap();
-                    assert_eq!(
-                        serde_json::to_value(&after.meta).unwrap(),
-                        serde_json::to_value(&before.meta).unwrap(),
-                        "{app}"
-                    );
+                    // 同上：DAO 读取会补上中央池视图字段，这里只校验子卡片保存的
+                    // 业务字段被原样保留（after 必须是 before 的超集）。
+                    let after_meta = serde_json::to_value(&after.meta).unwrap();
+                    let before_meta = serde_json::to_value(&before.meta).unwrap();
+                    for (field, expected) in before_meta.as_object().expect("before meta object") {
+                        assert_eq!(
+                            after_meta.get(field),
+                            Some(expected),
+                            "{app} 的子卡片元数据字段 {field} 必须被保留"
+                        );
+                    }
                     assert_eq!(after.created_at, before.created_at, "{app}");
                     assert_eq!(after.sort_index, before.sort_index, "{app}");
                     assert_eq!(after.name, "Updated");
