@@ -1956,13 +1956,16 @@ fn v18_repair_detection_and_backup_gate() {
          );
          INSERT OR REPLACE INTO settings (key, value)
          VALUES ('shared_key_pool_migrated_v18', 'true');
-         CREATE TABLE shared_key_groups (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL DEFAULT 0);
-         CREATE TABLE shared_api_keys (
+         -- 池表由 create_tables 建立，这里只是把形态对齐到「上版本遗留」的空池。
+         CREATE TABLE IF NOT EXISTS shared_key_groups (
+            id TEXT PRIMARY KEY, created_at INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE TABLE IF NOT EXISTS shared_api_keys (
             id TEXT PRIMARY KEY, group_id TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
             key_value TEXT NOT NULL, sort_index INTEGER NOT NULL DEFAULT 0,
             UNIQUE(group_id, key_value)
          );
-         CREATE TABLE provider_shared_key_links (
+         CREATE TABLE IF NOT EXISTS provider_shared_key_links (
             provider_id TEXT NOT NULL, app_type TEXT NOT NULL, group_id TEXT NOT NULL,
             PRIMARY KEY (provider_id, app_type)
          );",

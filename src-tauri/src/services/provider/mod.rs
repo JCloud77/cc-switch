@@ -4084,9 +4084,15 @@ wire_api = "responses"
             for (index, app) in ["claude", "codex", "gemini"].iter().enumerate() {
                 let id = format!("universal-{app}-metadata");
                 let mut child = state.db.get_provider_by_id(&id, app).unwrap().unwrap();
+                // DAO 读取会按中央池 hydrate meta（Claude/Codex 子卡片会多出
+                // apiKeys / selectedKeyId / sharedKeyApps 等池视图字段），所以这里只断言
+                // 父级元数据本身被原样继承下来。
+                let parent_meta = serde_json::to_value(&universal.meta).unwrap();
+                let child_meta = serde_json::to_value(&child.meta).unwrap();
                 assert_eq!(
-                    serde_json::to_value(&child.meta).unwrap(),
-                    serde_json::to_value(&universal.meta).unwrap()
+                    child_meta.get("usage_script"),
+                    parent_meta.get("usage_script"),
+                    "{app} 子卡片必须继承父级 usage_script"
                 );
                 child.meta = Some(
                     serde_json::from_value(json!({

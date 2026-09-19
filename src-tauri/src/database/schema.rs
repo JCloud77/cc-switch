@@ -1897,15 +1897,12 @@ impl Database {
             }
         }
 
-        // 已关联分组必须有非空 Key；已关联 provider 的选中 Key 必须属于其池。
+        // 这里只判「结构性矛盾」——数据层面的缺项属于可继续的中段状态：
+        // 用户清空某个池、或某张卡片还没建立池关联，都是 3.20 环境下会真实出现的形态
+        // （备份/导入的库尤其如此）。把这类形态当损坏拒绝，会让合法备份永远导不进来。
         let links = Self::shared_key_provider_links(conn)?;
         for (provider_id, app_type, group_id) in &links {
             let pool_ids = Self::shared_key_pool_key_ids(conn, group_id)?;
-            if pool_ids.is_empty() {
-                return Ok(SharedKeyPoolState::Inconsistent(format!(
-                    "已关联分组 {group_id} 没有任何 Key"
-                )));
-            }
             let Some(meta) = Self::provider_meta_json(conn, provider_id, app_type)? else {
                 return Ok(SharedKeyPoolState::Inconsistent(format!(
                     "{app_type}/{provider_id} 的 meta 无法解析"
@@ -1917,21 +1914,6 @@ impl Database {
                         "{app_type}/{provider_id} 选中的 Key {selected} 不属于其关联池"
                     )));
                 }
-            }
-        }
-
-        // 迁移漏项：配置里仍残留可用 Key（apiKeys 或 settings_config 活动凭据）却没有关联。
-        for (provider_id, app_type, meta) in Self::shared_key_candidate_providers(conn)? {
-            let linked = links
-                .iter()
-                .any(|(id, app, _)| id == &provider_id && app == &app_type);
-            if linked {
-                continue;
-            }
-            if !meta.api_keys.is_empty() || meta.selected_key_id.is_some() {
-                return Ok(SharedKeyPoolState::Inconsistent(format!(
-                    "{app_type}/{provider_id} 仍持有 Key 列表或选中 Key 但没有池关联"
-                )));
             }
         }
 
