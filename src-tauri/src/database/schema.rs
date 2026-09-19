@@ -2020,36 +2020,6 @@ impl Database {
     }
 
     /// 所有 Claude/Codex provider 的 meta，用于识别「迁移漏项」。
-    fn shared_key_candidate_providers(
-        conn: &Connection,
-    ) -> Result<Vec<(String, String, ProviderMeta)>, AppError> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, app_type, meta FROM providers WHERE app_type IN ('claude', 'codex')",
-            )
-            .map_err(|e| AppError::Database(format!("读取 provider 列表失败: {e}")))?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, rusqlite::types::Value>(2)?,
-                ))
-            })
-            .map_err(|e| AppError::Database(format!("读取 provider 列表失败: {e}")))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AppError::Database(format!("读取 provider 列表失败: {e}")))?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|(id, app_type, meta)| match meta {
-                rusqlite::types::Value::Text(text) => serde_json::from_str::<ProviderMeta>(&text)
-                    .ok()
-                    .map(|meta| (id, app_type, meta)),
-                _ => None,
-            })
-            .collect())
-    }
-
     /// 插入默认模型定价数据
     /// 格式: (model_id, display_name, input, output, cache_read, cache_creation)
     /// 注意: model_id 使用短横线格式（如 claude-haiku-4-5），与 API 返回的模型名称标准化后一致
