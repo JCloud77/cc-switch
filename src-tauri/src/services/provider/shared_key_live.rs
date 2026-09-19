@@ -287,6 +287,92 @@ mod tests {
         assert!(error.to_string().contains("JSON 对象"));
     }
 
+    /// Codex 侧的四类「凭据由上游/代理托管」卡片：池 Key 不得顶替它们的凭据管理。
+    #[test]
+    fn materialize_shared_keys_skips_managed_codex_cards() {
+        // codex_oauth（官方登录态本身就是凭据）
+        let mut codex_oauth = codex_provider(json!({"auth": {}}), Some("pool-key"));
+        codex_oauth.meta = Some(ProviderMeta {
+            provider_type: Some("codex_oauth".to_string()),
+            api_keys: vec![key_entry("pool-key", "sk-pool")],
+            selected_key_id: Some("pool-key".to_string()),
+            ..ProviderMeta::default()
+        });
+
+        // github_copilot（代理按请求注入 token）
+        let mut copilot = codex_provider(json!({"auth": {}}), Some("pool-key"));
+        copilot.meta = Some(ProviderMeta {
+            provider_type: Some("github_copilot".to_string()),
+            api_keys: vec![key_entry("pool-key", "sk-pool")],
+            selected_key_id: Some("pool-key".to_string()),
+            ..ProviderMeta::default()
+        });
+
+        // 官方 Codex 卡（id + category=official）
+        let mut official = Provider::with_id(
+            crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string(),
+            "ChatGPT".to_string(),
+            json!({"auth": {}, "config": "model_provider = \"openai\"\n"}),
+            None,
+        );
+        official.category = Some("official".to_string());
+        official.meta = Some(ProviderMeta {
+            api_keys: vec![key_entry("pool-key", "sk-pool")],
+            selected_key_id: Some("pool-key".to_string()),
+            ..ProviderMeta::default()
+        });
+
+        for (label, provider) in [
+            ("codex_oauth", codex_oauth),
+            ("github_copilot", copilot),
+            ("official", official),
+        ] {
+            let mut settings = provider.settings_config.clone();
+            materialize_selected_shared_key(&AppType::Codex, &provider, &mut settings)
+                .unwrap_or_else(|e| panic!("{label} 不应报错: {e}"));
+            let auth = settings.get("auth").and_then(Value::as_object);
+            let injected = auth
+                .and_then(|obj| obj.get("OPENAI_API_KEY"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            assert_ne!(
+                injected, "sk-pool",
+                "{label} 卡不得被池 Key 顶替（其凭据由上游或代理管理）"
+            );
+        }
+    }
+
+    /// 本轮保持现状的行为：Claude 侧的 Copilot/xAI 卡依旧让选中的手工 Key 优先。
+    ///
+    /// 这是升级前就存在的本地不一致（见 `.pi/PLAN.md` D3），只记录不重构；如果将来
+    /// 统一为「OAuth 卡忽略手工 Key」，本测试是必须先改的那一处。
+    #[test]
+    fn materialize_shared_keys_keeps_claude_manual_key_priority() {
+        let mut provider = claude_provider(
+            json!({"env": {"ANTHROPIC_BASE_URL": "https://copilot.example"}}),
+            "anthropic",
+        );
+        provider.meta = Some(ProviderMeta {
+            provider_type: Some("github_copilot".to_string()),
+            api_keys: vec![ApiKeyEntry {
+                id: "pool-key".to_string(),
+                label: String::new(),
+                key: "sk-pool".to_string(),
+                strategy: Some("anthropic".to_string()),
+            }],
+            selected_key_id: Some("pool-key".to_string()),
+            ..ProviderMeta::default()
+        });
+        let mut settings = provider.settings_config.clone();
+        materialize_selected_shared_key(&AppType::Claude, &provider, &mut settings)
+            .expect("claude provider");
+        assert_eq!(
+            settings["env"]["ANTHROPIC_API_KEY"],
+            json!("sk-pool"),
+            "Claude 侧保留选中手工 Key 优先（现状记录）"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // 与真实数据库的衔接：hydrate + 物化（进入 CI 的 `--lib shared_keys` 过滤）
     // -----------------------------------------------------------------------
