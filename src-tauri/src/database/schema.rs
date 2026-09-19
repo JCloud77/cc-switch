@@ -1786,7 +1786,7 @@ impl Database {
     ///
     /// 「唯一」约束在 SQLite 中体现为自动索引，而自动索引不会出现在 `sqlite_master`
     /// 的 `type='table'` 结果里，因此这里直接检查表 DDL 文本。
-    fn shared_key_pool_columns_present(conn: &Connection) -> Result<bool, AppError> {
+    pub(crate) fn shared_key_pool_columns_present(conn: &Connection) -> Result<bool, AppError> {
         if !Self::shared_key_pool_tables_present(conn)? {
             return Ok(false);
         }
@@ -1863,7 +1863,9 @@ impl Database {
     }
 
     /// 池状态分类：只有结构完整且数据自洽，才允许「只补 marker」这类无写入路径。
-    fn classify_shared_key_pool_state(conn: &Connection) -> Result<SharedKeyPoolState, AppError> {
+    pub(crate) fn classify_shared_key_pool_state(
+        conn: &Connection,
+    ) -> Result<SharedKeyPoolState, AppError> {
         let marker = Self::shared_key_pool_marker(conn)?;
 
         if !Self::shared_key_pool_columns_present(conn)? {
