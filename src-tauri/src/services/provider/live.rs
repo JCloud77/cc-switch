@@ -2505,7 +2505,7 @@ mod tests {
         assert_eq!(
             selected.as_deref(),
             Some(pool_key_id.as_str()),
-            "保存后的选中 id 必须指向池中的真实条目"
+            "保存后的选中 id 必须指向池中的真实条目（池按 Key 值去重，旧 id 被合并）"
         );
 
         // 归一化后的 provider 在 live 物化时解析出池 Key，而不是请求里的陈旧 id。

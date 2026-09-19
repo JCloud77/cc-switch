@@ -410,6 +410,17 @@ mod tests {
         (persisted.id, selected)
     }
 
+    /// 直读 `providers.meta` 原始值，绕开 DAO 的池 hydrate，用于判断「是否写回数据库」。
+    fn raw_provider_meta(db: &Database, provider_id: &str, app_type: &str) -> Result<String, AppError> {
+        let conn = crate::database::lock_conn!(db.conn);
+        conn.query_row(
+            "SELECT meta FROM providers WHERE id = ?1 AND app_type = ?2",
+            rusqlite::params![provider_id, app_type],
+            |row| row.get(0),
+        )
+        .map_err(|e| AppError::Database(e.to_string()))
+    }
+
     /// 模拟 provider add/update 的请求对象：只有 `selectedKeyId`，没有 `apiKeys`。
     fn request_provider(id: &str, config: Value, selected: &str) -> Provider {
         let mut provider = Provider::with_id(id.to_string(), "Pooled".to_string(), config, None);
@@ -455,9 +466,11 @@ mod tests {
         let stored = db
             .get_provider_by_id(&id, "claude")?
             .expect("provider still there");
-        let raw_meta = serde_json::to_string(&stored.meta).expect("meta json");
+        // hydrate 会按池填充内存视图（这是它的职责），所以只能查数据库原始行来判断
+        // 「物化是否写回」：providers.meta 既不存 Key 列表，也不存池 Key 值。
+        let raw_meta = raw_provider_meta(&db, "pooled", "claude")?;
         assert!(
-            !raw_meta.contains("sk-from-pool"),
+            !raw_meta.contains("apiKeys") && !raw_meta.contains("sk-from-pool"),
             "物化只作用于内存，不得写回数据库: {raw_meta}"
         );
         Ok(())

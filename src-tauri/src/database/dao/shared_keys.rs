@@ -154,6 +154,18 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
+        // 选中的 Key 可能已经不在池里：卡片保存时按 Key 值合并去重会让选中 id 指向一个
+        // 未进入池的条目（同一 Key 的另一个 id），于是 resolve_selected_key 解析失败、
+        // live 写入静默拿不到凭据。池是唯一真相，此处把失效选中重映射到池中同值/首个条目。
+        // 仅当用户确实选过（selectedKeyId 非空）时修复，未选择保持 None 以便上层回退。
+        let selection_stale = meta
+            .selected_key_id
+            .as_deref()
+            .is_some_and(|selected| !meta.api_keys.iter().any(|entry| entry.id == selected));
+        if selection_stale {
+            meta.selected_key_id = meta.api_keys.first().map(|entry| entry.id.clone());
+        }
+
         meta.api_keys = keys;
         meta.shared_key_apps = shared_apps;
         meta.shared_key_pool_loaded = true;
