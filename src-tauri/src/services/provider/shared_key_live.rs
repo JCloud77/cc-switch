@@ -411,7 +411,11 @@ mod tests {
     }
 
     /// 直读 `providers.meta` 原始值，绕开 DAO 的池 hydrate，用于判断「是否写回数据库」。
-    fn raw_provider_meta(db: &Database, provider_id: &str, app_type: &str) -> Result<String, AppError> {
+    fn raw_provider_meta(
+        db: &Database,
+        provider_id: &str,
+        app_type: &str,
+    ) -> Result<String, AppError> {
         let conn = crate::database::lock_conn!(db.conn);
         conn.query_row(
             "SELECT meta FROM providers WHERE id = ?1 AND app_type = ?2",
