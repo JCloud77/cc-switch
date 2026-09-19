@@ -521,7 +521,9 @@ mod tests {
         );
         let config_text = effective.get("config").and_then(Value::as_str);
         assert!(
-            !config_text.unwrap_or_default().contains("experimental_bearer_token"),
+            !config_text
+                .unwrap_or_default()
+                .contains("experimental_bearer_token"),
             "空配置不得被物化出 bearer token: {config_text:?}"
         );
 
