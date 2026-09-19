@@ -484,9 +484,11 @@ mod tests {
         crate::codex_config::preflight_codex_live_write(Some("custom"), auth, config_text)
             .expect("池中有 Key 的第三方配置必须通过写入预检");
 
-        let projected_text =
-            crate::codex_config::prepare_codex_provider_live_config(auth, config_text)
-                .expect("config projection");
+        let projected_text = crate::codex_config::prepare_codex_provider_live_config(
+            auth,
+            config_text.unwrap_or_default(),
+        )
+        .expect("config projection");
         assert!(
             projected_text.contains("sk-from-pool"),
             "config.toml 投影必须使用池中 Key: {projected_text}"

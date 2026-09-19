@@ -1984,7 +1984,7 @@ fn v18_repair_detection_and_backup_gate() {
 }
 
 #[test]
-fn v18_repair_sql_round_trip_keeps_marker_and_pool() {
+fn v18_repair_sql_round_trip_keeps_marker_and_pool() -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::memory().expect("memory db");
     {
         let conn = lock_conn!(db.conn);
@@ -2023,6 +2023,7 @@ fn v18_repair_sql_round_trip_keeps_marker_and_pool() {
         .expect("pool key after import");
     assert_eq!(key, "sk-roundtrip");
     assert!(Database::table_exists(&conn, "session_log_sync").expect("table"));
+    Ok(())
 }
 
 #[test]

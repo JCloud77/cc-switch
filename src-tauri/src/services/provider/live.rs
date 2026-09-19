@@ -2426,7 +2426,8 @@ mod tests {
     }
 
     #[test]
-    fn shared_keys_save_normalizes_selection_before_live_write() {
+    fn shared_keys_save_normalizes_selection_before_live_write(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let _home = TestHome::new();
         let db = std::sync::Arc::new(Database::memory().expect("memory db"));
         let state = crate::store::AppState::new(db.clone());
@@ -2516,6 +2517,7 @@ mod tests {
             json!("sk-shared"),
             "重读后的 provider 必须能物化出池中 Key"
         );
+        Ok(())
     }
 
     #[test]
