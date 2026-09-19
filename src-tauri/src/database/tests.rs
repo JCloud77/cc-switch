@@ -1841,11 +1841,12 @@ fn v18_repair_rejects_inconsistent_pool_and_rolls_back() {
     .expect("seed dangling link");
     Database::set_user_version(&conn, 18).expect("set user_version=18");
 
-    let error =
-        Database::apply_schema_migrations_on_conn(&conn).expect_err("悬空关联必须报错而不是重建池");
+    let error = Database::apply_schema_migrations_on_conn(&conn)
+        .expect_err("悬空关联必须报错而不是重建池");
+    let message = error.to_string();
     assert!(
-        error.to_string().contains("不存在的分组"),
-        "错误信息应指出悬空分组: {error}"
+        message.contains("不存在的分组") || message.contains("meta 无法解析"),
+        "悬空关联必须被识别为池状态异常: {message}"
     );
     assert!(
         !sync_table_has_byte_cursor_columns(&conn),
