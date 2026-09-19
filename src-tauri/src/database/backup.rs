@@ -232,6 +232,9 @@ impl Database {
             let mut main_conn = lock_conn!(self.conn);
             let backup_path =
                 Self::backup_database_file_from_conn(&backup_file_guard, &main_conn, &[])?;
+            // 存量主库必须先有可回滚的安全备份才允许被覆盖；只有主库文件本身不存在
+            // （新装/刚清空）时 None 才是合法结果。
+            Self::require_safety_backup_before_replace(backup_path.as_deref())?;
             if !preserve_tables.is_empty() {
                 Self::restore_tables(&main_conn, &temp_conn, preserve_tables)?;
             }
@@ -246,6 +249,26 @@ impl Database {
             .unwrap_or_default();
 
         Ok(backup_id)
+    }
+
+    /// 覆盖存量主库前的严格备份门禁。
+    ///
+    /// `backup_database_file_from_conn` 在主库文件不存在时返回 `None`，这是新装/空库的
+    /// 合法结果；但只要主库文件存在，`None` 就说明安全备份没做成，此时继续覆盖会让
+    /// 用户失去回滚点，因此直接拒绝（SQL 导入与 SQLite 恢复共用同一判定）。
+    fn require_safety_backup_before_replace(
+        safety_backup: Option<&Path>,
+    ) -> Result<(), AppError> {
+        if safety_backup.is_some() {
+            return Ok(());
+        }
+        let db_path = get_app_config_dir().join("cc-switch.db");
+        if !db_path.exists() {
+            return Ok(());
+        }
+        Err(AppError::Database(
+            "主数据库存在但未能创建安全备份，已拒绝覆盖以保护用户数据".to_string(),
+        ))
     }
 
     /// 创建内存快照以避免长时间持有数据库锁
@@ -1073,6 +1096,7 @@ impl Database {
                 &main_conn,
                 &[backup_path.as_path()],
             )?;
+            Self::require_safety_backup_before_replace(safety_backup.as_deref())?;
             before_replace(safety_backup.as_deref())?;
             let backup = Backup::new(&staging_conn, &mut main_conn)
                 .map_err(|e| AppError::Database(e.to_string()))?;

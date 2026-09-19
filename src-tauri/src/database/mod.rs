@@ -97,6 +97,12 @@ impl Database {
     /// 初始化数据库连接并创建表
     ///
     /// 数据库文件位于 `~/.cc-switch/cc-switch.db`
+    ///
+    /// 顺序要求（数据保护）：先只读探测版本与结构，再按门禁生成一次安全备份，
+    /// **最后**才执行 `create_tables` 与迁移。若先建表/迁移再备份，备份里已经包含
+    /// 部分修复，失去回滚价值；而 v18 的「等版本结构修复」（实机库已被本地魔改版
+    /// 盖章为 `user_version = 18` 但缺官方字节游标列）同样会改写存量库，必须一起
+    /// 纳入前置备份。
     pub fn init() -> Result<Self, AppError> {
         let db_path = get_app_config_dir().join("cc-switch.db");
         let db_exists = db_path.exists();
@@ -122,23 +128,49 @@ impl Database {
         let db = Self {
             conn: Mutex::new(conn),
         };
-        db.create_tables()?;
 
-        // Pre-migration backup: only when upgrading from an existing database
-        {
+        // 备份门禁所需的只读探测：必须在 create_tables / 迁移之前完成。
+        let backup_reason = {
             let conn = lock_conn!(db.conn);
             let version = Self::get_user_version(&conn)?;
-            drop(conn);
-            if version > 0 && version < SCHEMA_VERSION {
-                log::info!(
-                    "Creating pre-migration database backup (v{version} → v{SCHEMA_VERSION})"
-                );
-                if let Err(e) = db.backup_database_file() {
-                    log::warn!("Pre-migration backup failed, continuing migration: {e}");
+            if version > SCHEMA_VERSION {
+                return Err(AppError::Database(format!(
+                    "数据库版本过新（{version}），当前应用仅支持 {SCHEMA_VERSION}，请升级应用后再尝试。"
+                )));
+            }
+            let has_user_tables = Self::has_user_tables(&conn)?;
+            let needs_migration = version > 0 && version < SCHEMA_VERSION;
+            let needs_v18_repair = Self::schema_needs_v18_repair(&conn)?;
+            Self::safety_backup_reason(
+                version,
+                SCHEMA_VERSION,
+                has_user_tables,
+                needs_migration,
+                needs_v18_repair,
+            )
+        };
+
+        if let Some(reason) = backup_reason {
+            log::info!("Creating pre-write database safety backup ({reason})");
+            match db.backup_database_file() {
+                Ok(Some(path)) => {
+                    log::info!("Safety backup created at {}", path.display());
+                }
+                Ok(None) => {
+                    return Err(AppError::Database(
+                        "数据库已存在但没有可备份的主库文件，已停止后续建表与迁移以保护用户数据"
+                            .to_string(),
+                    ));
+                }
+                Err(e) => {
+                    return Err(AppError::Database(format!(
+                        "安全备份失败（{e}），已停止后续建表与迁移以保护用户数据"
+                    )));
                 }
             }
         }
 
+        db.create_tables()?;
         db.apply_schema_migrations()?;
         if let Err(e) = db.ensure_incremental_auto_vacuum() {
             log::warn!("Failed to ensure incremental auto-vacuum: {e}");
@@ -164,6 +196,67 @@ impl Database {
         }
 
         Ok(db)
+    }
+
+    /// 判断本次启动是否必须先做安全备份，并给出原因。
+    ///
+    /// 纯函数，便于单测覆盖门禁：只有「库里已有用户表」且「即将改写存量数据」
+    /// （低版本迁移或 v18 等版本结构修复）才需要备份；全新空库不做无意义备份。
+    pub(crate) fn safety_backup_reason(
+        version: i32,
+        schema_version: i32,
+        has_user_tables: bool,
+        needs_migration: bool,
+        needs_v18_repair: bool,
+    ) -> Option<String> {
+        if !has_user_tables {
+            return None;
+        }
+        if needs_migration {
+            return Some(format!("v{version} → v{schema_version}"));
+        }
+        if needs_v18_repair {
+            return Some(format!("v{schema_version} 结构修复"));
+        }
+        None
+    }
+
+    /// 只读探测：v18 结构是否缺失，需要「等版本修复」。
+    ///
+    /// 覆盖缺 `session_log_sync` 表、缺字节游标列、缺去重账本、缺共享 Key 池
+    /// 表/必需列、缺有效 marker，以及池状态异常（异常同样按「需要处理」返回 true，
+    /// 由迁移阶段给出明确错误——但备份先落地，避免用户失去回滚点）。
+    pub(crate) fn schema_needs_v18_repair(conn: &Connection) -> Result<bool, AppError> {
+        if !Self::has_user_tables(conn)? {
+            return Ok(false);
+        }
+        // 核心表缺失（例如只有 settings 的残缺库）交由既有导入校验/迁移报错处理，
+        // 这里不把它当成 v18 修复项，避免在坏库上写入 marker。
+        if !Self::table_exists(conn, "providers")? {
+            return Ok(false);
+        }
+
+        if !Self::table_exists(conn, "session_log_sync")? {
+            return Ok(true);
+        }
+        if !Self::has_column(conn, "session_log_sync", "last_byte_offset")?
+            || !Self::has_column(conn, "session_log_sync", "last_tail_fingerprint")?
+        {
+            return Ok(true);
+        }
+        if !Self::table_exists(conn, "session_usage_dedup")? {
+            return Ok(true);
+        }
+        if !Self::shared_key_pool_columns_present(conn)? {
+            return Ok(true);
+        }
+        if !Self::shared_key_pool_marker_present(conn)? {
+            return Ok(true);
+        }
+        Ok(matches!(
+            Self::classify_shared_key_pool_state(conn)?,
+            SharedKeyPoolState::Inconsistent(_)
+        ))
     }
 
     /// 读取磁盘上数据库的 `user_version`；仅当它比应用支持的 [`SCHEMA_VERSION`]

@@ -4,8 +4,10 @@
 
 use super::{lock_conn, Database, SCHEMA_VERSION};
 use crate::error::AppError;
+use crate::provider::ProviderMeta;
 use rusqlite::{params, Connection};
 use serde::Serialize;
+use std::collections::HashSet;
 
 #[derive(Serialize)]
 struct LegacySkillMigrationRow {
@@ -336,12 +338,20 @@ impl Database {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         // 18. Session Log Sync 表 (会话日志同步状态)
+        //
+        // last_byte_offset：Claude 路径的字节游标（seek 增量读）；NULL 表示
+        // 尚无字节游标（旧行号游标或非 Claude 路径行），此时回退全量读。
+        // last_tail_fingerprint：游标边界前尾部字节的指纹，用于识别文件被
+        // 外部重写（同尺寸/更大的替换无法靠 size 检测）；NULL 表示无指纹
+        // 可校验，按纯追加处理。
         conn.execute(
             "CREATE TABLE IF NOT EXISTS session_log_sync (
                 file_path TEXT PRIMARY KEY,
                 last_modified INTEGER NOT NULL,
                 last_line_offset INTEGER NOT NULL DEFAULT 0,
-                last_synced_at INTEGER NOT NULL
+                last_synced_at INTEGER NOT NULL,
+                last_byte_offset INTEGER,
+                last_tail_fingerprint INTEGER
             )",
             [],
         )
@@ -577,7 +587,7 @@ impl Database {
                     }
                     17 => {
                         log::info!(
-                            "迁移数据库从 v17 到 v18（Claude/Codex 共享中央 Key 池并补齐去重账本）"
+                            "迁移数据库从 v17 到 v18（会话日志字节游标列 + Claude/Codex 共享中央 Key 池）"
                         );
                         Self::migrate_v17_to_v18(conn)?;
                         Self::set_user_version(conn, 18)?;
@@ -590,6 +600,11 @@ impl Database {
                 }
                 version = Self::get_user_version(conn)?;
             }
+
+            // v18 等版本结构修复：实机库已被本地魔改版盖章为 `user_version = 18`
+            // （本地语义），版本循环一步都不会进，而库里仍缺官方新增的字节游标列。
+            // 修复本身幂等：只有「完整且带 marker」的库再次调用才完全不写数据。
+            Self::ensure_v18_structures(conn)?;
             Ok(())
         })();
 
@@ -1613,27 +1628,462 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_session_usage_dedup_semantic
              ON session_usage_dedup(data_source, semantic_id, has_entry_id);",
         )
-        .map_err(|error| AppError::Database(format!("创建会话用量去重账本失败: {error}")))?;
-        Ok(())
+        .map_err(|error| AppError::Database(format!("创建会话用量去重账本失败: {error}")))
     }
 
-    /// v17 -> v18：本地中央共享 Key 池，并为“旧本地 v17”补齐官方 session_usage_dedup。
+    /// v17 -> v18：官方会话日志字节游标列 ∪ 本地 Claude/Codex 共享中央 Key 池。
     ///
-    /// 官方 v3.20.0 把 v17 用于 session_usage_dedup；本地旧 v17 则用于共享 Key 池。
-    /// 已处于本地 v17 的数据库不会重跑官方 v16->v17，故在此做结构探测：缺少官方表时一并补建。
-    /// 保持幂等，以兼容官方 v16、本地 v17 与本地旧 v12 三路汇入 v18。
-    fn migrate_v17_to_v18(conn: &Connection) -> Result<(), AppError> {
+    /// 官方把 v17 用于 `session_usage_dedup`，本地旧 v17 则用于共享 Key 池，且两侧都把
+    /// `SCHEMA_VERSION` 提到 18（取值相同、静默合并）——因此 v18 必须是两侧需求的超集：
+    /// 字节游标列（`last_byte_offset` / `last_tail_fingerprint`）由官方语义补齐，共享
+    /// Key 池由本地语义建立。
+    ///
+    /// **必须与版本号无关地可重入**：实机数据库已被本地魔改版盖章为 `user_version = 18`，
+    /// v17 迁移臂一步都不会进，而这些库恰好缺官方新增的字节游标列。版本循环结束后会再
+    /// 调用一次本函数兜底（见 `apply_schema_migrations_on_conn`）。
+    ///
+    /// 纯结构补齐（补列、补表、建池表）每次都安全；**共享 Key 数据迁移不是**——
+    /// `migrate_provider_keys_to_shared_pools` 会 DELETE/INSERT 池行并重写 provider meta，
+    /// 只能对「尚未初始化」的库运行一次，故先做只读池状态分类。
+    fn ensure_v18_structures(conn: &Connection) -> Result<(), AppError> {
+        // 1) 官方字节游标列。缺表（异常库/测试夹具）跳过：create_tables 会以含列的新 DDL 建表。
+        if Self::table_exists(conn, "session_log_sync")? {
+            Self::add_column_if_missing(conn, "session_log_sync", "last_byte_offset", "INTEGER")?;
+            Self::add_column_if_missing(
+                conn,
+                "session_log_sync",
+                "last_tail_fingerprint",
+                "INTEGER",
+            )?;
+        }
+
+        // 2) 官方去重账本：本地旧 v17 已占用 v17 版本号，缺表的库在此补建。
         if !Self::table_exists(conn, "session_usage_dedup")? {
             Self::migrate_create_session_usage_dedup(conn)?;
         }
+
+        // 3) 共享 Key 池。上游迁移单测会构造只含目标表的部分 schema：没有 providers 时
+        //    只补结构、不写 marker（这种库不算可启动的完整库，Data loss 风险为零）。
         if !Self::table_exists(conn, "providers")? {
-            // 上游迁移单测会构造只包含目标表的部分 schema；没有 providers 时无迁移数据，安全跳过。
             return Ok(());
         }
+
+        //    建池表之前先读原始状态：marker 与原始结构矛盾时直接拒绝，不能让
+        //    create_shared_key_tables_on_conn 补出来的空表掩盖损坏。
+        Self::ensure_v18_pool_marker_consistent_with_raw_state(conn)?;
         Self::create_shared_key_tables_on_conn(conn)?;
-        Self::migrate_provider_keys_to_shared_pools(conn)?;
-        log::info!("v17 -> v18 迁移完成：Claude/Codex API Key 已集中存储并去重");
+
+        match Self::classify_shared_key_pool_state(conn)? {
+            // 已迁移且结构完整：不写池数据、不重写 provider meta。
+            SharedKeyPoolState::CompleteWithMarker => {}
+            // 池完整、数据自洽、只是缺 marker：只补 marker，逐值保留 Key、label、
+            // sort_index、分组、关联与 provider 原始 meta。已有中央池数据时不得依
+            // settings_config 的旧 Key 再次合并；marker 不是绕过完整性检查的许可证。
+            SharedKeyPoolState::CompleteWithoutMarker => {
+                Self::mark_shared_key_pool_migrated_v18(conn)?;
+                log::info!("v18：共享 Key 池结构完整，仅补齐迁移标记");
+            }
+            // 无中央池数据且未完成标记（允许只有空表，例如 create_tables 已执行的中断态）：
+            // 复用初次迁移，随后校验并盖章。
+            SharedKeyPoolState::LegacyUninitialized => {
+                Self::migrate_provider_keys_to_shared_pools(conn)?;
+                Self::validate_shared_key_pool_state(conn)?;
+                Self::mark_shared_key_pool_migrated_v18(conn)?;
+                log::info!("v18：Claude/Codex API Key 已集中存储并去重");
+            }
+            // 非空池但关联不完整、失效选中 ID，或 marker 与应有结构/数据矛盾：明确报错，
+            // 停止自动数据修复，既不重建也不覆盖用户池。
+            SharedKeyPoolState::Inconsistent(reason) => {
+                return Err(AppError::Database(format!(
+                    "共享 Key 池状态异常：{reason}；已停止自动修复。请先备份数据库，再人工检查 \
+                     shared_key_groups / shared_api_keys / provider_shared_key_links 与 \
+                     providers.meta 的一致性"
+                )));
+            }
+        }
         Ok(())
+    }
+
+    /// v17 -> v18 迁移入口（供版本循环与 `apply_schema_migrations_on_conn` 使用）。
+    fn migrate_v17_to_v18(conn: &Connection) -> Result<(), AppError> {
+        Self::ensure_v18_structures(conn)?;
+        log::info!("v17 -> v18 迁移完成：官方会话游标列 + Claude/Codex 共享 Key 池");
+        Ok(())
+    }
+
+    /// `shared_key_pool_migrated_v18` 标记的三态。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum SharedKeyPoolMarker {
+        /// `settings` 表或标记行不存在。
+        Absent,
+        /// 标记为假（尚未完成迁移）。
+        Pending,
+        /// 标记为真（迁移已完成）。
+        Done,
+    }
+
+    /// 共享 Key 池的迁移状态分类。
+    #[derive(Debug)]
+    enum SharedKeyPoolState {
+        CompleteWithMarker,
+        CompleteWithoutMarker,
+        LegacyUninitialized,
+        Inconsistent(String),
+    }
+
+    /// 读取共享 Key 池迁移标记。
+    ///
+    /// 无 `settings` 表视为无 marker；标记值不可解析时报错，而不是当作「迁移已完成」。
+    fn shared_key_pool_marker(conn: &Connection) -> Result<SharedKeyPoolMarker, AppError> {
+        if !Self::table_exists(conn, "settings")? {
+            return Ok(SharedKeyPoolMarker::Absent);
+        }
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'shared_key_pool_migrated_v18'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Database(format!("读取共享 Key 池迁移标记失败: {e}")))?;
+        match raw {
+            None => Ok(SharedKeyPoolMarker::Absent),
+            Some(value) => match value.trim() {
+                "1" | "true" | "TRUE" | "True" => Ok(SharedKeyPoolMarker::Done),
+                "0" | "false" | "FALSE" | "False" => Ok(SharedKeyPoolMarker::Pending),
+                other => Err(AppError::Database(format!(
+                    "共享 Key 池迁移标记值无法解析（{other}）；已停止自动迁移以免误判迁移状态"
+                ))),
+            },
+        }
+    }
+
+    /// 迁移标记是否已生效（`Absent`/`Pending` 都算「待处理」）。
+    pub(crate) fn shared_key_pool_marker_present(conn: &Connection) -> Result<bool, AppError> {
+        Ok(Self::shared_key_pool_marker(conn)? == SharedKeyPoolMarker::Done)
+    }
+
+    /// 仅供测试：在不触发数据迁移的前提下建立池表。
+    ///
+    /// 迁移矩阵需要构造「池表已建但数据未迁移」的中断态，以及「池已完整」的认领态；
+    /// 生产代码不得用这个入口绕过 `ensure_v18_structures` 的分类。
+    #[cfg(test)]
+    pub(crate) fn create_shared_key_tables_on_conn_for_test(
+        conn: &Connection,
+    ) -> Result<(), AppError> {
+        Self::create_shared_key_tables_on_conn(conn)
+    }
+
+    /// 写入共享 Key 池迁移标记；`settings` 表缺失时跳过，最小 schema 夹具不得被盖章。
+    fn mark_shared_key_pool_migrated_v18(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "settings")? {
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) \
+             VALUES ('shared_key_pool_migrated_v18', 'true')",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("写入共享 Key 池迁移标记失败: {e}")))?;
+        Ok(())
+    }
+
+    /// 只读探测：池三张表是否都已存在。
+    fn shared_key_pool_tables_present(conn: &Connection) -> Result<bool, AppError> {
+        for table in [
+            "shared_key_groups",
+            "shared_api_keys",
+            "provider_shared_key_links",
+        ] {
+            if !Self::table_exists(conn, table)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// 池表 + 关联表必需列是否齐全，且 `shared_api_keys` 保留分组内 Key 唯一约束。
+    ///
+    /// 「唯一」约束在 SQLite 中体现为自动索引，而自动索引不会出现在 `sqlite_master`
+    /// 的 `type='table'` 结果里，因此这里直接检查表 DDL 文本。
+    fn shared_key_pool_columns_present(conn: &Connection) -> Result<bool, AppError> {
+        if !Self::shared_key_pool_tables_present(conn)? {
+            return Ok(false);
+        }
+        for (table, column) in [
+            ("shared_key_groups", "id"),
+            ("shared_key_groups", "created_at"),
+            ("shared_api_keys", "id"),
+            ("shared_api_keys", "group_id"),
+            ("shared_api_keys", "label"),
+            ("shared_api_keys", "key_value"),
+            ("shared_api_keys", "sort_index"),
+            ("provider_shared_key_links", "provider_id"),
+            ("provider_shared_key_links", "app_type"),
+            ("provider_shared_key_links", "group_id"),
+        ] {
+            if !Self::has_column(conn, table, column)? {
+                return Ok(false);
+            }
+        }
+        let ddl: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shared_api_keys'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Database(format!("读取池表定义失败: {e}")))?;
+        let normalized = ddl.unwrap_or_default().to_ascii_lowercase();
+        Ok(normalized.contains("unique") && normalized.contains("key_value"))
+    }
+
+    /// 池三张表是否已有任意行。缺表/缺列时的数据探测（此时不能按列取值）。
+    fn shared_key_pool_has_core_rows(conn: &Connection) -> Result<bool, AppError> {
+        for table in [
+            "shared_key_groups",
+            "shared_api_keys",
+            "provider_shared_key_links",
+        ] {
+            if !Self::table_exists(conn, table)? {
+                continue;
+            }
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| AppError::Database(format!("统计表 {table} 行数失败: {e}")))?;
+            if count > 0 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// 只读探测：marker 与「原始池结构」矛盾时直接拒绝。
+    ///
+    /// 必须在 `create_shared_key_tables_on_conn` 之前调用，否则补出来的空表会掩盖损坏。
+    fn ensure_v18_pool_marker_consistent_with_raw_state(
+        conn: &Connection,
+    ) -> Result<(), AppError> {
+        if Self::shared_key_pool_columns_present(conn)? {
+            return Ok(());
+        }
+        if Self::shared_key_pool_marker(conn)? == SharedKeyPoolMarker::Done {
+            return Err(AppError::Database(
+                "数据库标记共享 Key 池迁移已完成，但池表或必需列缺失；已停止自动修复以免覆盖用户数据"
+                    .to_string(),
+            ));
+        }
+        if Self::shared_key_pool_has_core_rows(conn)? {
+            return Err(AppError::Database(
+                "共享 Key 池存在数据但结构或必需列缺失（可能为中断的迁移）；已停止自动修复以免覆盖用户数据"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// 池状态分类：只有结构完整且数据自洽，才允许「只补 marker」这类无写入路径。
+    fn classify_shared_key_pool_state(conn: &Connection) -> Result<SharedKeyPoolState, AppError> {
+        let marker = Self::shared_key_pool_marker(conn)?;
+
+        if !Self::shared_key_pool_columns_present(conn)? {
+            if marker == SharedKeyPoolMarker::Done {
+                return Ok(SharedKeyPoolState::Inconsistent(
+                    "标记已完成但池表结构缺失".to_string(),
+                ));
+            }
+            if Self::shared_key_pool_has_core_rows(conn)? {
+                return Ok(SharedKeyPoolState::Inconsistent(
+                    "池表结构缺失但存在残留数据".to_string(),
+                ));
+            }
+            return Ok(SharedKeyPoolState::LegacyUninitialized);
+        }
+
+        // 池无任何行：未初始化（中断态的空表、或清理后的空池）都按可安全初始化处理。
+        if !Self::shared_key_pool_has_core_rows(conn)? {
+            return Ok(SharedKeyPoolState::LegacyUninitialized);
+        }
+
+        // 关联必须指向真实分组。
+        let linked_groups = Self::shared_key_pool_linked_groups(conn)?;
+        for group_id in &linked_groups {
+            if !Self::shared_key_group_exists(conn, group_id)? {
+                return Ok(SharedKeyPoolState::Inconsistent(format!(
+                    "关联指向不存在的分组 {group_id}"
+                )));
+            }
+        }
+
+        // 已关联分组必须有非空 Key；已关联 provider 的选中 Key 必须属于其池。
+        let links = Self::shared_key_provider_links(conn)?;
+        for (provider_id, app_type, group_id) in &links {
+            let pool_ids = Self::shared_key_pool_key_ids(conn, group_id)?;
+            if pool_ids.is_empty() {
+                return Ok(SharedKeyPoolState::Inconsistent(format!(
+                    "已关联分组 {group_id} 没有任何 Key"
+                )));
+            }
+            let Some(meta) = Self::provider_meta_json(conn, provider_id, app_type)? else {
+                return Ok(SharedKeyPoolState::Inconsistent(format!(
+                    "{app_type}/{provider_id} 的 meta 无法解析"
+                )));
+            };
+            if let Some(selected) = meta.selected_key_id.as_deref() {
+                if !pool_ids.contains(selected) {
+                    return Ok(SharedKeyPoolState::Inconsistent(format!(
+                        "{app_type}/{provider_id} 选中的 Key {selected} 不属于其关联池"
+                    )));
+                }
+            }
+        }
+
+        // 迁移漏项：配置里仍残留可用 Key（apiKeys 或 settings_config 活动凭据）却没有关联。
+        for (provider_id, app_type, meta) in Self::shared_key_candidate_providers(conn)? {
+            let linked = links
+                .iter()
+                .any(|(id, app, _)| id == &provider_id && app == &app_type);
+            if linked {
+                continue;
+            }
+            if !meta.api_keys.is_empty() || meta.selected_key_id.is_some() {
+                return Ok(SharedKeyPoolState::Inconsistent(format!(
+                    "{app_type}/{provider_id} 仍持有 Key 列表或选中 Key 但没有池关联"
+                )));
+            }
+        }
+
+        if marker == SharedKeyPoolMarker::Done {
+            Ok(SharedKeyPoolState::CompleteWithMarker)
+        } else {
+            Ok(SharedKeyPoolState::CompleteWithoutMarker)
+        }
+    }
+
+    /// 迁移后校验：池与关联必须自洽（错误信息可定位，但不包含任何密钥值）。
+    fn validate_shared_key_pool_state(conn: &Connection) -> Result<(), AppError> {
+        match Self::classify_shared_key_pool_state(conn)? {
+            SharedKeyPoolState::Inconsistent(reason) => Err(AppError::Database(format!(
+                "共享 Key 池迁移校验失败：{reason}（数据已回滚到迁移前状态）"
+            ))),
+            _ => Ok(()),
+        }
+    }
+
+    /// 已被关联引用的分组 id（去重）。
+    fn shared_key_pool_linked_groups(conn: &Connection) -> Result<Vec<String>, AppError> {
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT group_id FROM provider_shared_key_links")
+            .map_err(|e| AppError::Database(format!("读取共享 Key 关联失败: {e}")))?;
+        let groups = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| AppError::Database(format!("读取共享 Key 关联失败: {e}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(format!("读取共享 Key 关联失败: {e}")))?;
+        Ok(groups)
+    }
+
+    fn shared_key_group_exists(conn: &Connection, group_id: &str) -> Result<bool, AppError> {
+        let found = conn
+            .query_row(
+                "SELECT 1 FROM shared_key_groups WHERE id = ?1",
+                params![group_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(|e| AppError::Database(format!("校验共享 Key 分组失败: {e}")))?;
+        Ok(found.unwrap_or(false))
+    }
+
+    /// provider 关联 (provider_id, app_type, group_id)。
+    fn shared_key_provider_links(
+        conn: &Connection,
+    ) -> Result<Vec<(String, String, String)>, AppError> {
+        let mut stmt = conn
+            .prepare("SELECT provider_id, app_type, group_id FROM provider_shared_key_links")
+            .map_err(|e| AppError::Database(format!("读取共享 Key 关联失败: {e}")))?;
+        let links = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| AppError::Database(format!("读取共享 Key 关联失败: {e}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(format!("读取共享 Key 关联失败: {e}")))?;
+        Ok(links)
+    }
+
+    /// 某个分组内的 Key id 集合。
+    fn shared_key_pool_key_ids(
+        conn: &Connection,
+        group_id: &str,
+    ) -> Result<HashSet<String>, AppError> {
+        let mut stmt = conn
+            .prepare("SELECT id FROM shared_api_keys WHERE group_id = ?1")
+            .map_err(|e| AppError::Database(format!("校验共享 Key 池失败: {e}")))?;
+        let ids = stmt
+            .query_map(params![group_id], |row| row.get::<_, String>(0))
+            .map_err(|e| AppError::Database(format!("校验共享 Key 池失败: {e}")))?
+            .collect::<Result<HashSet<_>, _>>()
+            .map_err(|e| AppError::Database(format!("校验共享 Key 池失败: {e}")))?;
+        Ok(ids)
+    }
+
+    /// 读取单个 provider 的 meta（不可解析返回 None）。
+    ///
+    /// 非 TEXT 值（例如字节级 SQL 备份中的 BLOB）在本地迁移里必须原样保留，这里按
+    /// 「无法判定」处理而不是写成错误值。
+    fn provider_meta_json(
+        conn: &Connection,
+        provider_id: &str,
+        app_type: &str,
+    ) -> Result<Option<ProviderMeta>, AppError> {
+        let raw: Option<rusqlite::types::Value> = conn
+            .query_row(
+                "SELECT meta FROM providers WHERE id = ?1 AND app_type = ?2",
+                params![provider_id, app_type],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Database(format!("读取 provider meta 失败: {e}")))?;
+        Ok(match raw {
+            Some(rusqlite::types::Value::Text(text)) => serde_json::from_str(&text).ok(),
+            _ => None,
+        })
+    }
+
+    /// 所有 Claude/Codex provider 的 meta，用于识别「迁移漏项」。
+    fn shared_key_candidate_providers(
+        conn: &Connection,
+    ) -> Result<Vec<(String, String, ProviderMeta)>, AppError> {
+        let mut stmt = conn
+            .prepare("SELECT id, app_type, meta FROM providers WHERE app_type IN ('claude', 'codex')")
+            .map_err(|e| AppError::Database(format!("读取 provider 列表失败: {e}")))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, rusqlite::types::Value>(2)?,
+                ))
+            })
+            .map_err(|e| AppError::Database(format!("读取 provider 列表失败: {e}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(format!("读取 provider 列表失败: {e}")))?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, app_type, meta)| match meta {
+                rusqlite::types::Value::Text(text) => {
+                    serde_json::from_str::<ProviderMeta>(&text).ok().map(|meta| (id, app_type, meta))
+                }
+                _ => None,
+            })
+            .collect())
     }
 
     /// 插入默认模型定价数据
@@ -1641,6 +2091,24 @@ impl Database {
     /// 注意: model_id 使用短横线格式（如 claude-haiku-4-5），与 API 返回的模型名称标准化后一致
     fn seed_model_pricing(conn: &Connection) -> Result<(), AppError> {
         let pricing_data = [
+            // Claude Fable 5.1 / Mythos 5.1（2026-09-01 发布；同 Fable 5 价，
+            // 但缓存读为 0.025x = $0.25，非 Fable 5 的 $1）
+            (
+                "claude-fable-5-1",
+                "Claude Fable 5.1",
+                "10",
+                "50",
+                "0.25",
+                "12.50",
+            ),
+            (
+                "claude-mythos-5-1",
+                "Claude Mythos 5.1",
+                "10",
+                "50",
+                "0.25",
+                "12.50",
+            ),
             // Claude Fable 5（Opus 之上的新档）
             (
                 "claude-fable-5",
@@ -1669,14 +2137,15 @@ impl Database {
                 "0.50",
                 "6.25",
             ),
-            // Claude Sonnet 5（list 价，与 Sonnet 4.6 一致；促销 $2/$10 至 2026-08-31 不入表）
+            // Claude Sonnet 5（官方定价页 2026-09 确认：$2/$10 介绍价转为正式价，
+            // 原定 09-01 涨至 $3/$15 取消）
             (
                 "claude-sonnet-5",
                 "Claude Sonnet 5",
-                "3",
-                "15",
-                "0.30",
-                "3.75",
+                "2",
+                "10",
+                "0.20",
+                "2.50",
             ),
             // Claude 4.7 系列
             (
@@ -1787,9 +2256,17 @@ impl Database {
                 "0.30",
                 "3.75",
             ),
+            // GPT-6 系列（Astra，2026-09-04 发布，1.05M 窗口）
+            // 官方价页 + 模型页 + models.dev 三源一致：10/50，cache read 1，cache write 1.25× 输入 = 12.50。
+            // >272K 长上下文档（20/75/2/25）本表无法表达，与 gpt-5.5 同样忽略。
+            // effort 档 low/medium/high/xhigh 由查价剥后缀回落到本行；max 不在剥离列表
+            //（会与 *-max 真 id 撞名），不另加后缀行。
+            ("gpt-6-astra", "GPT-6 Astra", "10", "50", "1", "12.5"),
             // GPT-5.6 系列（Sol / Terra / Luna，2026-06 发布）
             // 5.6 家族起 cache write 收 1.25× 输入价（此前 GPT 模型写缓存免费，勿回填旧系列）
-            ("gpt-5.6-sol", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
+            // 2026-09-06 审计：Sol 改促销价 4/20/0.40/5（OpenAI 价页原文"至少持续到 2026-11-21"），
+            // 挂牌价 5/30/0.50/6.25。录促销价、不进豁免表：促销结束 models.dev 更新后审计会自动报出。
+            ("gpt-5.6-sol", "GPT-5.6 Sol", "4", "20", "0.40", "5"),
             // 2026-07-30 OpenAI 降价：luna -80%、terra -20%，sol 不变（Fast mode 2× 价不入表）
             ("gpt-5.6-terra", "GPT-5.6 Terra", "2", "12", "0.20", "2.50"),
             (
@@ -1800,13 +2277,14 @@ impl Database {
                 "0.02",
                 "0.25",
             ),
-            // 裸名 gpt-5.6 是 sol 的官方别名；effort 后缀对齐 gpt-5.5 系列的记账形态
-            ("gpt-5.6", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
-            ("gpt-5.6-low", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
-            ("gpt-5.6-medium", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
-            ("gpt-5.6-high", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
-            ("gpt-5.6-xhigh", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
-            ("gpt-5.6-minimal", "GPT-5.6 Sol", "5", "30", "0.50", "6.25"),
+            // 裸名 gpt-5.6 是 sol 的官方别名；effort 后缀对齐 gpt-5.5 系列的记账形态。
+            // 查价先精确匹配 id 再剥 effort 后缀，这些行必须与 sol 同步改价，否则旧价会压过基础行。
+            ("gpt-5.6", "GPT-5.6 Sol", "4", "20", "0.40", "5"),
+            ("gpt-5.6-low", "GPT-5.6 Sol", "4", "20", "0.40", "5"),
+            ("gpt-5.6-medium", "GPT-5.6 Sol", "4", "20", "0.40", "5"),
+            ("gpt-5.6-high", "GPT-5.6 Sol", "4", "20", "0.40", "5"),
+            ("gpt-5.6-xhigh", "GPT-5.6 Sol", "4", "20", "0.40", "5"),
+            ("gpt-5.6-minimal", "GPT-5.6 Sol", "4", "20", "0.40", "5"),
             // GPT-5.5 系列
             ("gpt-5.5", "GPT-5.5", "5", "30", "0.50", "0"),
             ("gpt-5.5-low", "GPT-5.5", "5", "30", "0.50", "0"),
@@ -1993,9 +2471,19 @@ impl Database {
             ("gpt-4.1", "GPT-4.1", "2", "8", "0.50", "0"),
             ("gpt-4.1-mini", "GPT-4.1 Mini", "0.40", "1.60", "0.10", "0"),
             ("gpt-4.1-nano", "GPT-4.1 Nano", "0.10", "0.40", "0.025", "0"),
+            // Gemini 3.8 系列（2026-09-02 发布，1M 窗口）
+            // 介绍价 0.75/3.75/0.075 至 2026-12-31，2027-01-01 起挂牌价 1.50/7.50/0.15；口径同 3.7 Flash，勿加豁免。
+            (
+                "gemini-3.8-flash",
+                "Gemini 3.8 Flash",
+                "0.75",
+                "3.75",
+                "0.075",
+                "0",
+            ),
             // Gemini 3.7 系列
             // 录的是介绍价（官方公告 + ai.google.dev 价表 + models.dev 三源一致）。
-            // ⚠️ 介绍价 2026-12-31 到期，2027-01-01 起恢复 1.50/7.50/0.15（= 3.6 Flash 现价）。
+            // ⚠️ 介绍价 2026-12-31 到期，2027-01-01 起恢复挂牌价 1.50/7.50/0.15（3.6/3.8 Flash 同此规则）。
             // 到期后需走 seed + repair 双写改回；届时 models.dev 会先更新，
             // /jason-update-model 审计的 A 段会自动报出这一行作为提醒——
             // 因此这一行刻意不进 audit-ignore.json，勿加豁免（会屏蔽掉该提醒）。
@@ -2008,12 +2496,14 @@ impl Database {
                 "0",
             ),
             // Gemini 3.6 系列
+            // 2026-09-06 审计：Google 价页已把 3.6 Flash 也改成介绍价 0.75/3.75/0.075（至 2026-12-31），
+            // 2027-01-01 起恢复挂牌价 1.50/7.50/0.15。与 3.7/3.8 Flash 同口径，刻意不进 audit-ignore.json。
             (
                 "gemini-3.6-flash",
                 "Gemini 3.6 Flash",
-                "1.50",
-                "7.50",
-                "0.15",
+                "0.75",
+                "3.75",
+                "0.075",
                 "0",
             ),
             // Gemini 3.5 系列
@@ -2233,7 +2723,18 @@ impl Database {
             //   代价=夜间/凌晨用量高估一倍。勿按「阶梯取低档」惯例改成空闲档。
             //
             // input=缓存未命中价，cache_read=缓存命中价；DeepSeek 不单收 cache write → 0。
-            // deepseek-chat / deepseek-reasoner 自 2026-07 起为 V4 Flash 的 legacy 别名（同价）
+            //
+            // ── 2026-09-11：V4 Flash 退役，三个 id 全部由 DeepSeek-V4.1-Flash 承接 ──
+            // 官方价页原文：legacy names `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp`
+            // 仍被接受，但「the corresponding models have been retired」，请求由 V4.1-Flash 服务
+            // 并按 Flash 价计费 → 三者同价。V4.1 Flash 高峰档 0.3/1.2/0.006（空闲档 0.15/0.6/0.003
+            // 恰为一半；models.dev 录的正是空闲档，故审计 A 段会长期报这几行，属预期）。
+            // deepseek-flash 是官方当前唯一推荐名，必须单列：查价前缀兜底是 LIKE '{id}-%'，
+            // 只命中更长的行，短 id 匹配不到 deepseek-v4-flash，缺行即静默按 0 计费。
+            //
+            // 🔴 deepseek-chat / deepseek-reasoner 停在 V4 Flash 高峰档不动（2026-09-11 复核）：
+            // 官方文档站已全站搜不到这两个 id、models.dev 第一方条目也已删除 —— 无权威源可证
+            // 「跟随 V4.1 Flash 降价」或「已下线」任一方向，按无源不动原则保留旧值。
             (
                 "deepseek-chat",
                 "DeepSeek Chat",
@@ -2251,11 +2752,19 @@ impl Database {
                 "0",
             ),
             (
+                "deepseek-flash",
+                "DeepSeek V4.1 Flash",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+            ),
+            (
                 "deepseek-v4-flash",
                 "DeepSeek V4 Flash",
-                "0.44",
-                "1.32",
-                "0.014",
+                "0.3",
+                "1.2",
+                "0.006",
                 "0",
             ),
             // 部分上游（如阿里百炼）回传 4 位 MMDD 日期变体。查价的
@@ -2264,17 +2773,32 @@ impl Database {
             (
                 "deepseek-v4-flash-0731",
                 "DeepSeek V4 Flash",
-                "0.44",
-                "1.32",
-                "0.014",
+                "0.3",
+                "1.2",
+                "0.006",
                 "0",
             ),
+            // 旧视觉实验名，官方定价页明示「仍被接受、由 V4.1-Flash 承接并按 Flash 价计费」。
+            // 官方安装脚本 ≤1.2.0 写过这个 id，存量供应商仍在用；前缀兜底匹配不到更短的
+            // deepseek-v4-flash，不单列会静默按 0 计费
+            (
+                "deepseek-v4-flash-vision-exp",
+                "DeepSeek V4 Flash Vision Exp",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+            ),
+            // 🔴 2026-09-14 12:00 北京时间起：官方公告 V4 Pro 有序下线，在 V4.1 Pro 发布前
+            // 所有 deepseek-v4-pro 请求「are all routed to V4.1 Flash and billed at the V4.1
+            // Flash price」→ 本行随之落到 Flash 档，与上方四行同价。V4 Pro 自己的高峰档
+            // 1.32/3.96/0.044 仅在 09-14 前有效（repair 守卫照抄的正是这组旧值）。
             (
                 "deepseek-v4-pro",
                 "DeepSeek V4 Pro",
-                "1.32",
-                "3.96",
-                "0.044",
+                "0.3",
+                "1.2",
+                "0.006",
                 "0",
             ),
             // Kimi (月之暗面)
@@ -2321,7 +2845,16 @@ impl Database {
             ("hunyuan-hy3", "Hunyuan Hy3", "0.14", "0.56", "0.035", "0"),
             ("hy3", "Hunyuan Hy3", "0.14", "0.56", "0.035", "0"),
             // MiniMax 系列
-            ("minimax-m2.1", "MiniMax M2.1", "0.27", "0.95", "0.03", "0"),
+            // 2026-09-06 审计：官方按量价页（platform.minimax.io/docs/guides/pricing-paygo）
+            // M2 / M2.1 / M2.5 均为 0.3/1.2/0.03/0.375，models.dev 一致；旧值 0.27/0.95 与 0.15 为早期误录。
+            (
+                "minimax-m2.1",
+                "MiniMax M2.1",
+                "0.30",
+                "1.20",
+                "0.03",
+                "0.375",
+            ),
             (
                 "minimax-m2.1-lightning",
                 "MiniMax M2.1 Lightning",
@@ -2330,8 +2863,15 @@ impl Database {
                 "0.03",
                 "0",
             ),
-            ("minimax-m2", "MiniMax M2", "0.27", "0.95", "0.03", "0"),
-            ("minimax-m2.5", "MiniMax M2.5", "0.15", "0.95", "0.03", "0"),
+            ("minimax-m2", "MiniMax M2", "0.30", "1.20", "0.03", "0.375"),
+            (
+                "minimax-m2.5",
+                "MiniMax M2.5",
+                "0.30",
+                "1.20",
+                "0.03",
+                "0.375",
+            ),
             (
                 "minimax-m2.5-lightning",
                 "MiniMax M2.5 Lightning",
@@ -2363,6 +2903,15 @@ impl Database {
             ("glm-5", "GLM-5", "1", "3.2", "0.2", "0"),
             ("glm-5.1", "GLM-5.1", "1.4", "4.4", "0.26", "0"),
             ("glm-5.2", "GLM-5.2", "1.4", "4.4", "0.26", "0"),
+            ("glm-5.3", "GLM-5.3", "1.4", "4.4", "0.26", "0"),
+            (
+                "glm-5.3-flash",
+                "GLM-5.3-Flash",
+                "0.15",
+                "0.50",
+                "0.03",
+                "0",
+            ),
             ("glm-5-turbo", "GLM-5-Turbo", "1.2", "4", "0.24", "0"),
             ("glm-5v-turbo", "GLM-5V-Turbo", "1.2", "4", "0.24", "0"),
             // MiMo (小米)
@@ -2386,6 +2935,16 @@ impl Database {
             ),
             // Qwen 系列 (阿里巴巴)
             ("qwen3.8-max", "Qwen3.8 Max", "2", "6", "0.25", "2.50"),
+            // 2026-09-06：阿里国际站价页 0.15/0.47 全区间（0<Token≤1M）平价、无阶梯；
+            // 缓存两列官方只注明"非常规比例"未给数字，取 models.dev（与 qwen3.8-max 同口径）
+            (
+                "qwen3.8-flash",
+                "Qwen3.8 Flash",
+                "0.15",
+                "0.47",
+                "0.016",
+                "0.20",
+            ),
             ("qwen3.7-max", "Qwen3.7 Max", "2.50", "7.50", "0.25", "0"),
             ("qwen3.7-plus", "Qwen3.7 Plus", "0.40", "1.60", "0.08", "0"),
             (
@@ -2634,6 +3193,20 @@ impl Database {
 
     fn repair_current_model_pricing(conn: &Connection) -> Result<(), AppError> {
         let pricing_fixes = [
+            // 2026-09-02 官方定价页确认 Sonnet 5 $2/$10 介绍价转为正式价、原定 09-01 涨至
+            // $3/$15 取消：早先按 list 价 seed 的行改回正式价（用户手改过的行不匹配旧值，不动）
+            (
+                "claude-sonnet-5",
+                "Claude Sonnet 5",
+                "2",
+                "10",
+                "0.20",
+                "2.50",
+                "3",
+                "15",
+                "0.30",
+                "3.75",
+            ),
             // 2026-08-13 models.dev 审计核价：grok-4.5 的 cached input 官方挂牌为 0.30
             // （docs.x.ai 现行价表），与 grok-4.5-build 的实测计费一致；早先按 0.50
             // 录入的行在此校正。注意 0.50 是 grok-4.6 的 cached 价，勿两者互串
@@ -3096,6 +3669,195 @@ impl Database {
                 "0.003625",
                 "0",
             ),
+            // 2026-09-06 审计。以下条目须排在上方所有旧条目之后（链式守卫，顺序由
+            // tests.rs::model_pricing_seed_repairs_known_outdated_builtin_prices 锁住）：
+            // - gpt-5.6-sol：<v3.19 老库先经 07-12 条目把 cache_write 0 补成 6.25，再由本条降到促销价
+            // - minimax-m2.5：先经 0.12→0.15 条目，再由本条到 0.30
+            // Google 3.6 Flash 改介绍价 0.75/3.75/0.075（至 2026-12-31，挂牌 1.50/7.50/0.15）
+            (
+                "gemini-3.6-flash",
+                "Gemini 3.6 Flash",
+                "0.75",
+                "3.75",
+                "0.075",
+                "0",
+                "1.50",
+                "7.50",
+                "0.15",
+                "0",
+            ),
+            // OpenAI GPT-5.6 Sol 促销价 4/20/0.40/5（至少到 2026-11-21）；裸名与 effort 后缀行同步
+            (
+                "gpt-5.6-sol",
+                "GPT-5.6 Sol",
+                "4",
+                "20",
+                "0.40",
+                "5",
+                "5",
+                "30",
+                "0.50",
+                "6.25",
+            ),
+            (
+                "gpt-5.6",
+                "GPT-5.6 Sol",
+                "4",
+                "20",
+                "0.40",
+                "5",
+                "5",
+                "30",
+                "0.50",
+                "6.25",
+            ),
+            (
+                "gpt-5.6-low",
+                "GPT-5.6 Sol",
+                "4",
+                "20",
+                "0.40",
+                "5",
+                "5",
+                "30",
+                "0.50",
+                "6.25",
+            ),
+            (
+                "gpt-5.6-medium",
+                "GPT-5.6 Sol",
+                "4",
+                "20",
+                "0.40",
+                "5",
+                "5",
+                "30",
+                "0.50",
+                "6.25",
+            ),
+            (
+                "gpt-5.6-high",
+                "GPT-5.6 Sol",
+                "4",
+                "20",
+                "0.40",
+                "5",
+                "5",
+                "30",
+                "0.50",
+                "6.25",
+            ),
+            (
+                "gpt-5.6-xhigh",
+                "GPT-5.6 Sol",
+                "4",
+                "20",
+                "0.40",
+                "5",
+                "5",
+                "30",
+                "0.50",
+                "6.25",
+            ),
+            (
+                "gpt-5.6-minimal",
+                "GPT-5.6 Sol",
+                "4",
+                "20",
+                "0.40",
+                "5",
+                "5",
+                "30",
+                "0.50",
+                "6.25",
+            ),
+            // MiniMax 官方按量价：M2 / M2.1 / M2.5 = 0.3/1.2/0.03/0.375
+            (
+                "minimax-m2",
+                "MiniMax M2",
+                "0.30",
+                "1.20",
+                "0.03",
+                "0.375",
+                "0.27",
+                "0.95",
+                "0.03",
+                "0",
+            ),
+            (
+                "minimax-m2.1",
+                "MiniMax M2.1",
+                "0.30",
+                "1.20",
+                "0.03",
+                "0.375",
+                "0.27",
+                "0.95",
+                "0.03",
+                "0",
+            ),
+            (
+                "minimax-m2.5",
+                "MiniMax M2.5",
+                "0.30",
+                "1.20",
+                "0.03",
+                "0.375",
+                "0.15",
+                "0.95",
+                "0.03",
+                "0",
+            ),
+            // 2026-09-11 审计：DeepSeek V4 Flash 退役，打到 deepseek-v4-flash / -0731 的
+            // 请求已由 V4.1-Flash 承接并按 Flash 价计费（官方定价页 quick_start/pricing），
+            // 高峰档 0.44/1.32/0.014 → 0.3/1.2/0.006。
+            //
+            // 🔴 必须排在上方 2026-08-16 峰谷调价五条之后：老库要先被那一组推到
+            // 0.44/1.32/0.014，本组的守卫才能命中；挪到其前老库会停在 0.44 不再前进。
+            // deepseek-chat / deepseek-reasoner 刻意不在本组 —— 官方已全面下架、无权威源
+            // 可证其跟随降价，见 seed_model_pricing 的 DeepSeek V4 段注释。
+            (
+                "deepseek-v4-flash",
+                "DeepSeek V4 Flash",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+            ),
+            (
+                "deepseek-v4-flash-0731",
+                "DeepSeek V4 Flash",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+                "0.44",
+                "1.32",
+                "0.014",
+                "0",
+            ),
+            // 2026-09-14 12:00 北京时间起 deepseek-v4-pro 全部路由到 V4.1 Flash 并按 Flash
+            // 价计费（官方定价页注(2)），本行随之落到 Flash 档。
+            //
+            // 🔴 守卫是 V4 Pro 自己的高峰档 1.32/3.96/0.044，由上方 2026-08-16 那条产出 ——
+            // 本条必须排在它之后，链条：1.68/3.36/0.14 →(2026-07)→ 0.435/0.87/0.003625
+            // →(2026-08-16 峰谷)→ 1.32/3.96/0.044 →(本条)→ 0.3/1.2/0.006。
+            (
+                "deepseek-v4-pro",
+                "DeepSeek V4 Pro",
+                "0.3",
+                "1.2",
+                "0.006",
+                "0",
+                "1.32",
+                "3.96",
+                "0.044",
+                "0",
+            ),
         ];
 
         for (
@@ -3478,6 +4240,46 @@ mod tests {
              VALUES ('pi_session', 'request', 'semantic', 1)",
             [],
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn migrate_v17_to_v18_adds_byte_cursor_to_existing_sync_table() -> Result<(), AppError> {
+        // 真实升级路径：v17 库带旧 DDL 的 session_log_sync（无字节游标列，
+        // 字节游标曾短暂搭 v17 车、已执行过 v17 的开发库正是这个形状）
+        // 与存量游标行，迁移后列补上、存量行保持 NULL（首轮按行号转换）
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE session_log_sync (
+                file_path TEXT PRIMARY KEY,
+                last_modified INTEGER NOT NULL,
+                last_line_offset INTEGER NOT NULL DEFAULT 0,
+                last_synced_at INTEGER NOT NULL
+             );
+             INSERT INTO session_log_sync VALUES ('/tmp/a.jsonl', 5, 3, 1);",
+        )?;
+        Database::set_user_version(&conn, 17)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert!(Database::has_column(
+            &conn,
+            "session_log_sync",
+            "last_byte_offset"
+        )?);
+        assert!(Database::has_column(
+            &conn,
+            "session_log_sync",
+            "last_tail_fingerprint"
+        )?);
+        let (byte_offset, fingerprint): (Option<i64>, Option<i64>) = conn.query_row(
+            "SELECT last_byte_offset, last_tail_fingerprint
+             FROM session_log_sync WHERE file_path = '/tmp/a.jsonl'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(byte_offset, None, "存量行的字节游标必须为 NULL");
+        assert_eq!(fingerprint, None, "存量行的尾部指纹必须为 NULL");
         Ok(())
     }
 }

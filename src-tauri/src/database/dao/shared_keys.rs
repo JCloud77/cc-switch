@@ -78,6 +78,24 @@ impl Database {
         SHARED_KEY_APPS.contains(&app_type)
     }
 
+    /// [`Self::hydrate_shared_keys_for_provider`] 的 Database 级入口。
+    ///
+    /// provider add/update 流程在保存后可能继续使用请求传入的原始 `Provider`（只有
+    /// `selectedKeyId`，没有 `apiKeys`），因此构造 effective settings 前必须先按池
+    /// hydrate。持锁期间只调用连接级 helper，不再调用会取同一 mutex 的 Database 方法；
+    /// 数据库错误向上传递，不静默退回旧 Key。
+    pub(crate) fn hydrate_shared_keys_for_provider_in_db(
+        &self,
+        app_type: &str,
+        provider: &mut Provider,
+    ) -> Result<(), AppError> {
+        if !Self::app_supports_shared_keys(app_type) {
+            return Ok(());
+        }
+        let conn = lock_conn!(self.conn);
+        Self::hydrate_shared_keys_for_provider(&conn, app_type, provider)
+    }
+
     /// Hydrate the central pool into the existing ProviderMeta wire shape so
     /// adapters and the frontend can keep using `apiKeys` without duplicating
     /// the list in every providers.meta row.
@@ -85,8 +103,7 @@ impl Database {
         conn: &Connection,
         app_type: &str,
         provider: &mut Provider,
-    ) -> Result<(), AppError> {
-        if !Self::app_supports_shared_keys(app_type) {
+    ) -> Result<(), AppError> {        if !Self::app_supports_shared_keys(app_type) {
             return Ok(());
         }
 

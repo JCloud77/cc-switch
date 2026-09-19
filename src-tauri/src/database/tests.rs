@@ -976,6 +976,39 @@ fn model_pricing_seed_repairs_known_outdated_builtin_prices() {
             [],
         )
         .expect("set custom GLM price");
+        // <v3.19 老库形态：cache_write 仍是最初 seed 的 0（07-12 条目才补成 6.25）
+        conn.execute(
+            "UPDATE model_pricing
+             SET input_cost_per_million = '5',
+                 output_cost_per_million = '30',
+                 cache_read_cost_per_million = '0.50',
+                 cache_creation_cost_per_million = '0'
+             WHERE model_id = 'gpt-5.6-sol'",
+            [],
+        )
+        .expect("restore pre-v3.19 GPT-5.6 Sol price");
+        // 最早 seed 的 M2.5 价（bb7c83c2 时代）
+        conn.execute(
+            "UPDATE model_pricing
+             SET input_cost_per_million = '0.12',
+                 output_cost_per_million = '0.95',
+                 cache_read_cost_per_million = '0.03',
+                 cache_creation_cost_per_million = '0'
+             WHERE model_id = 'minimax-m2.5'",
+            [],
+        )
+        .expect("restore oldest MiniMax M2.5 price");
+        // 2026-07-31 之前的 V4 Flash 形态（cache_read 尚未修正为 0.0028）
+        conn.execute(
+            "UPDATE model_pricing
+             SET input_cost_per_million = '0.14',
+                 output_cost_per_million = '0.28',
+                 cache_read_cost_per_million = '0.028',
+                 cache_creation_cost_per_million = '0'
+             WHERE model_id = 'deepseek-v4-flash'",
+            [],
+        )
+        .expect("restore oldest DeepSeek V4 Flash price");
     }
 
     db.ensure_model_pricing_seeded()
@@ -990,14 +1023,15 @@ fn model_pricing_seed_repairs_known_outdated_builtin_prices() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("query DeepSeek price");
-    // 从远古价 1.68/3.36/0.14 出发要连跳两级才能到位：
+    // 从远古价 1.68/3.36/0.14 出发要连跳三级才能到位：
     //   1.68/3.36/0.14 →(2026-07 条目)→ 0.435/0.87/0.003625
     //                  →(2026-08-16 峰谷调价条目)→ 1.32/3.96/0.044
+    //                  →(2026-09-14 起 V4 Pro 路由到 V4.1 Flash)→ 0.3/1.2/0.006
     // 这同时锁住了 repair 条目的顺序：新条目必须排在旧条目之后，
     // 否则老库会停在中间价位，本断言即会失败。
     assert_eq!(
         deepseek,
-        ("1.32".to_string(), "3.96".to_string(), "0.044".to_string())
+        ("0.3".to_string(), "1.2".to_string(), "0.006".to_string())
     );
 
     let glm: (String, String, String) = conn
@@ -1009,6 +1043,313 @@ fn model_pricing_seed_repairs_known_outdated_builtin_prices() {
         )
         .expect("query GLM price");
     assert_eq!(glm, ("9".to_string(), "9".to_string(), "9".to_string()));
+
+    // 2026-09-06 条目同样依赖顺序：
+    //   gpt-5.6-sol  5/30/0.50/0 →(07-12 补 cache_write)→ 5/30/0.50/6.25 →(09-06 促销)→ 4/20/0.40/5
+    //   minimax-m2.5 0.12/0.95/0.03/0 →(0.12→0.15 条目)→ 0.15/… →(09-06 官方价)→ 0.30/1.20/0.03/0.375
+    let sol: (String, String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = 'gpt-5.6-sol'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("query GPT-5.6 Sol price");
+    assert_eq!(
+        sol,
+        (
+            "4".to_string(),
+            "20".to_string(),
+            "0.40".to_string(),
+            "5".to_string()
+        )
+    );
+    let m25: (String, String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = 'minimax-m2.5'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("query MiniMax M2.5 price");
+    assert_eq!(
+        m25,
+        (
+            "0.30".to_string(),
+            "1.20".to_string(),
+            "0.03".to_string(),
+            "0.375".to_string()
+        )
+    );
+
+    // 2026-09-11 条目是 DeepSeek V4 Flash 链条的第三级，从最老形态出发要连跳三级：
+    //   0.14/0.28/0.028 →(2026-07 修 cache_read)→ 0.14/0.28/0.0028
+    //                   →(2026-08-16 峰谷调价)→ 0.44/1.32/0.014
+    //                   →(2026-09-11 V4.1 Flash 承接)→ 0.3/1.2/0.006
+    // 任一条目被挪到前面，老库都会停在中间价位，本断言即失败。
+    let flash: (String, String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = 'deepseek-v4-flash'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("query DeepSeek V4 Flash price");
+    assert_eq!(
+        flash,
+        (
+            "0.3".to_string(),
+            "1.2".to_string(),
+            "0.006".to_string(),
+            "0".to_string()
+        )
+    );
+}
+
+#[test]
+fn model_pricing_seed_covers_deepseek_v41_flash_aliases() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+
+    // 官方定价页（2026-09-11）：deepseek-flash 是唯一推荐名，两个 legacy 名仍被接受
+    // 但均由 V4.1-Flash 承接并按 Flash 价计费 → 四行同价（本表统一录高峰档）。
+    // 查价前缀兜底是 LIKE '{id}-%'，只命中更长的行，任一行缺失都会静默按 0 计费。
+    for model_id in [
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-flash-vision-exp",
+    ] {
+        let price: (String, String, String, String) = conn
+            .query_row(
+                "SELECT input_cost_per_million, output_cost_per_million,
+                        cache_read_cost_per_million, cache_creation_cost_per_million
+                 FROM model_pricing WHERE model_id = ?1",
+                [model_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("query DeepSeek V4.1 Flash family price");
+        assert_eq!(
+            price,
+            (
+                "0.3".to_string(),
+                "1.2".to_string(),
+                "0.006".to_string(),
+                "0".to_string()
+            ),
+            "{model_id}"
+        );
+    }
+}
+
+#[test]
+fn model_pricing_seed_includes_claude_5_1_and_standard_sonnet_5_prices() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+
+    for model_id in ["claude-fable-5-1", "claude-mythos-5-1"] {
+        let price: (String, String, String, String) = conn
+            .query_row(
+                "SELECT input_cost_per_million, output_cost_per_million,
+                        cache_read_cost_per_million, cache_creation_cost_per_million
+                 FROM model_pricing WHERE model_id = ?1",
+                [model_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("query Fable 5.1 family price");
+        // 缓存读 0.025x = $0.25，不是 Fable 5 的 $1
+        assert_eq!(
+            price,
+            (
+                "10".to_string(),
+                "50".to_string(),
+                "0.25".to_string(),
+                "12.50".to_string(),
+            ),
+            "{model_id}"
+        );
+    }
+
+    let sonnet: (String, String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = 'claude-sonnet-5'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("query Sonnet 5 price");
+    // $2/$10 介绍价已转为正式价（原定 2026-09-01 涨至 $3/$15 取消）
+    assert_eq!(
+        sonnet,
+        (
+            "2".to_string(),
+            "10".to_string(),
+            "0.20".to_string(),
+            "2.50".to_string(),
+        )
+    );
+}
+
+#[test]
+fn model_pricing_seed_includes_gpt_6_astra() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+
+    let price: (String, String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = 'gpt-6-astra'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("query GPT-6 Astra price");
+
+    assert_eq!(
+        price,
+        (
+            "10".to_string(),
+            "50".to_string(),
+            "1".to_string(),
+            "12.5".to_string(),
+        )
+    );
+}
+
+#[test]
+fn model_pricing_seed_includes_glm_5_3_flash() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+
+    let price: (String, String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = 'glm-5.3-flash'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("query GLM-5.3-Flash price");
+
+    assert_eq!(
+        price,
+        (
+            "0.15".to_string(),
+            "0.50".to_string(),
+            "0.03".to_string(),
+            "0".to_string(),
+        )
+    );
+}
+
+#[test]
+fn model_pricing_seed_includes_gemini_3_8_flash() {
+    let db = Database::memory().expect("create memory db");
+    let conn = db.conn.lock().expect("lock conn");
+
+    let price: (String, String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = 'gemini-3.8-flash'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("query Gemini 3.8 Flash price");
+
+    assert_eq!(
+        price,
+        (
+            "0.75".to_string(),
+            "3.75".to_string(),
+            "0.075".to_string(),
+            "0".to_string(),
+        )
+    );
+}
+
+#[test]
+fn model_pricing_seed_repairs_sonnet_5_list_price_but_keeps_custom_price() {
+    let db = Database::memory().expect("create memory db");
+
+    {
+        let conn = db.conn.lock().expect("lock conn");
+        // 旧 seed 按 list 价录入的行 → 应被修正
+        conn.execute(
+            "UPDATE model_pricing
+             SET input_cost_per_million = '3',
+                 output_cost_per_million = '15',
+                 cache_read_cost_per_million = '0.30',
+                 cache_creation_cost_per_million = '3.75'
+             WHERE model_id = 'claude-sonnet-5'",
+            [],
+        )
+        .expect("restore old Sonnet 5 list price");
+    }
+
+    db.ensure_model_pricing_seeded()
+        .expect("ensure pricing seeded");
+
+    {
+        let conn = db.conn.lock().expect("lock conn");
+        let sonnet: (String, String, String, String) = conn
+            .query_row(
+                "SELECT input_cost_per_million, output_cost_per_million,
+                        cache_read_cost_per_million, cache_creation_cost_per_million
+                 FROM model_pricing WHERE model_id = 'claude-sonnet-5'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("query repaired Sonnet 5 price");
+        assert_eq!(
+            sonnet,
+            (
+                "2".to_string(),
+                "10".to_string(),
+                "0.20".to_string(),
+                "2.50".to_string(),
+            )
+        );
+
+        // 用户手改过的价（不匹配旧 seed 值）不动
+        conn.execute(
+            "UPDATE model_pricing
+             SET input_cost_per_million = '9',
+                 output_cost_per_million = '9',
+                 cache_read_cost_per_million = '9',
+                 cache_creation_cost_per_million = '9'
+             WHERE model_id = 'claude-sonnet-5'",
+            [],
+        )
+        .expect("set custom Sonnet 5 price");
+    }
+
+    db.ensure_model_pricing_seeded()
+        .expect("ensure pricing seeded again");
+
+    let conn = db.conn.lock().expect("lock conn");
+    let custom: (String, String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = 'claude-sonnet-5'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("query custom Sonnet 5 price");
+    assert_eq!(
+        custom,
+        (
+            "9".to_string(),
+            "9".to_string(),
+            "9".to_string(),
+            "9".to_string(),
+        )
+    );
 }
 
 #[test]
@@ -1108,5 +1449,586 @@ fn migration_is_idempotent_at_v18() {
     assert!(
         Database::table_exists(&conn, "provider_shared_key_links").expect("links present"),
         "provider_shared_key_links should exist after fresh v18 apply"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// v18 迁移矩阵：官方 v18 语义（会话字节游标列）∪ 本地 v18 语义（共享 Key 池）
+// ---------------------------------------------------------------------------
+
+/// 构造「官方 v17」库：有官方去重账本、无池表、`session_log_sync` 无字节游标列。
+///
+/// 必须先建当前 schema 再把结构退回历史形态——SQLite 不能删列，只能重建表；
+/// 且不能沿用「先 create_tables 就当作官方旧库」，那会掩盖真实升级路径。
+fn make_official_v17_like(conn: &Connection) {
+    Database::create_tables_on_conn(conn).expect("create current schema");
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS provider_shared_key_links;
+         DROP TABLE IF EXISTS shared_api_keys;
+         DROP TABLE IF EXISTS shared_key_groups;
+         DROP TABLE session_log_sync;
+         CREATE TABLE session_log_sync (
+            file_path TEXT PRIMARY KEY,
+            last_modified INTEGER NOT NULL,
+            last_line_offset INTEGER NOT NULL DEFAULT 0,
+            last_synced_at INTEGER NOT NULL
+         );",
+    )
+    .expect("downgrade to official v17 shape");
+    Database::set_user_version(conn, 17).expect("set user_version=17");
+}
+
+/// 判定某表是否存在名为 column 的列（缺失即视为「旧结构」）。
+fn sync_table_has_byte_cursor_columns(conn: &Connection) -> bool {
+    Database::has_column(conn, "session_log_sync", "last_byte_offset").unwrap_or(false)
+        && Database::has_column(conn, "session_log_sync", "last_tail_fingerprint").unwrap_or(false)
+}
+
+fn shared_key_pool_tables_exist(conn: &Connection) -> bool {
+    ["shared_key_groups", "shared_api_keys", "provider_shared_key_links"]
+        .iter()
+        .all(|table| Database::table_exists(conn, table).unwrap_or(false))
+}
+
+#[test]
+fn v18_migration_fresh_database_has_cursor_columns_and_pool() {
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create schema");
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate fresh db");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version"),
+        SCHEMA_VERSION
+    );
+    assert_eq!(SCHEMA_VERSION, 18, "本轮方案固定为 18（不占用官方未来 19）");
+    assert!(sync_table_has_byte_cursor_columns(&conn));
+    assert!(shared_key_pool_tables_exist(&conn));
+    assert!(
+        Database::shared_key_pool_marker_present(&conn).expect("marker"),
+        "全新库首次也应完成池初始化并写入 marker"
+    );
+}
+
+#[test]
+fn v18_migration_from_official_v17_builds_pool_and_cursor_columns() {
+    let conn = Connection::open_in_memory().expect("open db");
+    make_official_v17_like(&conn);
+    assert!(
+        !shared_key_pool_tables_exist(&conn),
+        "官方 v17 夹具必须没有池表"
+    );
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate official v17");
+
+    assert_eq!(Database::get_user_version(&conn).expect("version"), 18);
+    assert!(sync_table_has_byte_cursor_columns(&conn));
+    assert!(shared_key_pool_tables_exist(&conn));
+    assert!(
+        Database::table_exists(&conn, "session_usage_dedup").expect("dedup"),
+        "官方 v17 夹具自带去重账本，迁移后必须仍在"
+    );
+    assert!(
+        Database::shared_key_pool_marker_present(&conn).expect("marker"),
+        "官方 v18 盖章库建池后必须写 marker，避免下次启动重跑数据迁移"
+    );
+}
+
+#[test]
+fn v18_migration_from_local_v17_preserves_pool_and_selection() {
+    let conn = Connection::open_in_memory().expect("open db");
+    make_official_v17_like(&conn);
+    // 官方 v17 夹具此刻无池表：先建池并塞入数据，再退回 v17 版本号，模拟
+    // 「本地魔改版已建池、随后并入官方会话游标列」的形态。
+    Database::create_shared_key_tables_on_conn_for_test(&conn);
+    conn.execute_batch(
+        "INSERT INTO shared_key_groups (id, created_at) VALUES ('g1', 100);
+         INSERT INTO shared_api_keys (id, group_id, label, key_value, sort_index)
+         VALUES ('k1', 'g1', 'main', 'sk-keep', 0), ('k2', 'g1', 'spare', 'sk-spare', 1);
+         INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES ('p1', 'claude', 'P1', '{\"env\":{\"ANTHROPIC_BASE_URL\":\"https://a.example\"}}',
+                 '{\"selectedKeyId\":\"k2\"}');
+         INSERT INTO provider_shared_key_links (provider_id, app_type, group_id)
+         VALUES ('p1', 'claude', 'g1');",
+    )
+    .expect("seed local pool");
+    Database::set_user_version(&conn, 17).expect("set user_version=17");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate local v17");
+
+    assert_eq!(Database::get_user_version(&conn).expect("version"), 18);
+    assert!(sync_table_has_byte_cursor_columns(&conn));
+    let keys: Vec<(String, String, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, key_value, sort_index FROM shared_api_keys ORDER BY id")
+            .expect("prepare");
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect")
+    };
+    assert_eq!(
+        keys,
+        vec![
+            ("k1".to_string(), "sk-keep".to_string(), 0),
+            ("k2".to_string(), "sk-spare".to_string(), 1),
+        ],
+        "本地 v17 的池数据必须逐值保真（含 label 之外的排序）"
+    );
+    let selected: String = conn
+        .query_row(
+            "SELECT json_extract(meta, '$.selectedKeyId') FROM providers WHERE id = 'p1'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("selected key");
+    assert_eq!(selected, "k2");
+    let provider_meta: String = conn
+        .query_row("SELECT meta FROM providers WHERE id = 'p1'", [], |r| r.get(0))
+        .expect("meta");
+    assert!(
+        !provider_meta.contains("apiKeys"),
+        "池已是唯一真相，provider meta 不应再存 Key 列表: {provider_meta}"
+    );
+}
+
+#[test]
+fn v18_migration_repairs_dedup_table_without_touching_pool() {
+    // 本地旧 v17：有池数据、缺官方去重账本（两侧都用过 v17 的冲突形态）。
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create current schema");
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS session_usage_dedup;
+         INSERT INTO shared_key_groups (id, created_at) VALUES ('g9', 5);
+         INSERT INTO shared_api_keys (id, group_id, label, key_value, sort_index)
+         VALUES ('k9', 'g9', '', 'sk-old', 0);",
+    )
+    .expect("seed local legacy v17");
+    Database::set_user_version(&conn, 17).expect("set user_version=17");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate legacy local v17");
+
+    assert!(Database::table_exists(&conn, "session_usage_dedup").expect("dedup"));
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM shared_api_keys", [], |r| r.get(0))
+        .expect("pool count");
+    assert_eq!(count, 1, "补建官方表不得动池数据");
+}
+
+#[test]
+fn v18_migration_from_local_v12_runs_continuous_chain() {
+    let conn = Connection::open_in_memory().expect("open db");
+    make_official_v17_like(&conn);
+    conn.execute_batch("DROP TABLE IF EXISTS session_usage_dedup;")
+        .expect("drop dedup for v12 shape");
+    Database::set_user_version(&conn, 12).expect("set user_version=12");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate v12 -> v18");
+
+    assert_eq!(Database::get_user_version(&conn).expect("version"), 18);
+    assert!(Database::table_exists(&conn, "session_usage_dedup").expect("dedup"));
+    assert!(sync_table_has_byte_cursor_columns(&conn));
+    assert!(shared_key_pool_tables_exist(&conn));
+}
+
+#[test]
+fn v18_migration_from_official_v16_runs_continuous_chain() {
+    let conn = Connection::open_in_memory().expect("open db");
+    make_official_v17_like(&conn);
+    conn.execute_batch("DROP TABLE IF EXISTS session_usage_dedup;")
+        .expect("drop dedup for v16 shape");
+    Database::set_user_version(&conn, 16).expect("set user_version=16");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate v16 -> v18");
+
+    assert_eq!(Database::get_user_version(&conn).expect("version"), 18);
+    assert!(Database::table_exists(&conn, "session_usage_dedup").expect("dedup"));
+    assert!(shared_key_pool_tables_exist(&conn));
+    assert!(Database::shared_key_pool_marker_present(&conn).expect("marker"));
+}
+
+#[test]
+fn v18_migration_recovers_from_interrupted_state() {
+    // 中断态：池表已建、marker 未写、version 未更新。
+    let conn = Connection::open_in_memory().expect("open db");
+    make_official_v17_like(&conn);
+    Database::create_shared_key_tables_on_conn_for_test(&conn);
+    conn.execute_batch(
+        "INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES ('p2', 'codex', 'P2', '{\"auth\":{}}', '{\"apiKeys\":[{\"id\":\"kx\",\"label\":\"\",\"key\":\"sk-x\"}],\"selectedKeyId\":\"kx\"}');",
+    )
+    .expect("seed interrupted provider");
+    Database::set_user_version(&conn, 17).expect("set user_version=17");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("recover interrupted migration");
+
+    assert_eq!(Database::get_user_version(&conn).expect("version"), 18);
+    assert!(
+        Database::shared_key_pool_marker_present(&conn).expect("marker"),
+        "中断态的二次迁移必须完成初始化并盖章"
+    );
+    let keys: i64 = conn
+        .query_row("SELECT COUNT(*) FROM shared_api_keys", [], |r| r.get(0))
+        .expect("pool count");
+    assert_eq!(keys, 1, "残留的 provider Key 应被收进中央池");
+    let links: i64 = conn
+        .query_row("SELECT COUNT(*) FROM provider_shared_key_links", [], |r| {
+            r.get(0)
+        })
+        .expect("link count");
+    assert_eq!(links, 1);
+}
+
+#[test]
+fn v18_repair_applies_cursor_columns_to_stamped_local_v18() {
+    // 实机等价形态：本地语义 18 已盖章、池完整并带 marker、缺官方字节游标列。
+    // 版本循环一步都不会进，必须靠版本无关的 ensure 兜底。
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create current schema");
+    conn.execute_batch(
+        "DROP TABLE session_log_sync;
+         CREATE TABLE session_log_sync (
+            file_path TEXT PRIMARY KEY,
+            last_modified INTEGER NOT NULL,
+            last_line_offset INTEGER NOT NULL DEFAULT 0,
+            last_synced_at INTEGER NOT NULL
+         );
+         INSERT INTO session_log_sync VALUES ('/tmp/a.jsonl', 11, 7, 3);
+         INSERT INTO shared_key_groups (id, created_at) VALUES ('g-machine', 1);
+         INSERT INTO shared_api_keys (id, group_id, label, key_value, sort_index)
+         VALUES ('km', 'g-machine', 'machine', 'sk-machine', 0);
+         INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES ('pm', 'claude', 'PM', '{\"env\":{}}', '{\"selectedKeyId\":\"km\"}');
+         INSERT INTO provider_shared_key_links (provider_id, app_type, group_id)
+         VALUES ('pm', 'claude', 'g-machine');
+         INSERT OR REPLACE INTO settings (key, value)
+         VALUES ('shared_key_pool_migrated_v18', 'true');",
+    )
+    .expect("seed stamped local v18");
+    // 关键：先删除两个字节游标列不存在——此处直接以旧 DDL 建表即已完成。
+    Database::set_user_version(&conn, 18).expect("set user_version=18");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("equal-version repair");
+
+    assert_eq!(Database::get_user_version(&conn).expect("version"), 18);
+    assert!(
+        sync_table_has_byte_cursor_columns(&conn),
+        "等版本修复必须补上官方字节游标列"
+    );
+    let existing_offset: Option<i64> = conn
+        .query_row(
+            "SELECT last_byte_offset FROM session_log_sync WHERE file_path = '/tmp/a.jsonl'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("row preserved");
+    assert!(
+        existing_offset.is_none(),
+        "存量行保持 NULL，由扫描层按旧行号游标转换"
+    );
+    let keys: i64 = conn
+        .query_row("SELECT COUNT(*) FROM shared_api_keys", [], |r| r.get(0))
+        .expect("pool count");
+    assert_eq!(keys, 1, "已有池数据不得被重写或清空");
+    let label: String = conn
+        .query_row("SELECT label FROM shared_api_keys WHERE id = 'km'", [], |r| {
+            r.get(0)
+        })
+        .expect("label preserved");
+    assert_eq!(label, "machine");
+}
+
+#[test]
+fn v18_repair_claims_complete_pool_without_resurrecting_deleted_keys() {
+    // 完整已有池、无 marker，且 provider 的 settings_config 里已经删掉了旧 Key：
+    // 只补 marker，不重跑 reconcile（旧 Key 不得复活，池行与 meta 必须原样）。
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create current schema");
+    conn.execute_batch(
+        "INSERT INTO shared_key_groups (id, created_at) VALUES ('g2', 7);
+         INSERT INTO shared_api_keys (id, group_id, label, key_value, sort_index)
+         VALUES ('k20', 'g2', 'kept', 'sk-kept', 0);
+         INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES ('p20', 'claude', 'P20', '{\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"\"}}',
+                 '{\"selectedKeyId\":\"k20\",\"customUserAgent\":\"ua-keep\"}');",
+    )
+    .expect("seed complete pool without marker");
+    Database::set_user_version(&conn, 18).expect("set user_version=18");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("claim existing pool");
+
+    assert!(Database::shared_key_pool_marker_present(&conn).expect("marker"));
+    let keys: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, key_value FROM shared_api_keys ORDER BY id")
+            .expect("prepare");
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect")
+    };
+    assert_eq!(keys, vec![("k20".to_string(), "sk-kept".to_string())]);
+    let meta: String = conn
+        .query_row("SELECT meta FROM providers WHERE id = 'p20'", [], |r| r.get(0))
+        .expect("meta");
+    assert!(
+        meta.contains("ua-keep"),
+        "provider 原始 meta 必须逐值保留: {meta}"
+    );
+    assert!(
+        !meta.contains("sk-kept"),
+        "只补 marker 的路径不得把池 Key 写回 provider meta: {meta}"
+    );
+}
+
+#[test]
+fn v18_repair_rejects_marker_without_pool_structure() {
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create current schema");
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS provider_shared_key_links;
+         DROP TABLE IF EXISTS shared_api_keys;
+         DROP TABLE IF EXISTS shared_key_groups;
+         INSERT OR REPLACE INTO settings (key, value)
+         VALUES ('shared_key_pool_migrated_v18', 'true');",
+    )
+    .expect("seed contradictory marker");
+    Database::set_user_version(&conn, 18).expect("set user_version=18");
+
+    let error = Database::apply_schema_migrations_on_conn(&conn)
+        .expect_err("marker 与结构矛盾时必须拒绝自动修复");
+    assert!(
+        error.to_string().contains("共享 Key 池"),
+        "错误信息应可定位到共享 Key 池: {error}"
+    );
+    assert!(
+        !shared_key_pool_tables_exist(&conn),
+        "拒绝后不得补出空池表掩盖损坏"
+    );
+}
+
+#[test]
+fn v18_repair_rejects_inconsistent_pool_and_rolls_back() {
+    // 池有数据但关联指向不存在的分组：明确报错，且 savepoint 回滚到迁移前状态。
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create current schema");
+    conn.execute_batch(
+        "DROP TABLE session_log_sync;
+         CREATE TABLE session_log_sync (
+            file_path TEXT PRIMARY KEY,
+            last_modified INTEGER NOT NULL,
+            last_line_offset INTEGER NOT NULL DEFAULT 0,
+            last_synced_at INTEGER NOT NULL
+         );
+         PRAGMA foreign_keys = OFF;
+         INSERT INTO shared_key_groups (id, created_at) VALUES ('g3', 1);
+         INSERT INTO shared_api_keys (id, group_id, label, key_value, sort_index)
+         VALUES ('k3', 'g3', '', 'sk-3', 0);
+         INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES ('p3', 'claude', 'P3', '{\"env\":{}}', '{}');
+         INSERT INTO provider_shared_key_links (provider_id, app_type, group_id)
+         VALUES ('p3', 'claude', 'g-missing');",
+    )
+    .expect("seed dangling link");
+    Database::set_user_version(&conn, 18).expect("set user_version=18");
+
+    let error = Database::apply_schema_migrations_on_conn(&conn)
+        .expect_err("悬空关联必须报错而不是重建池");
+    assert!(
+        error.to_string().contains("不存在的分组"),
+        "错误信息应指出悬空分组: {error}"
+    );
+    assert!(
+        !sync_table_has_byte_cursor_columns(&conn),
+        "迁移 savepoint 内的补列必须随失败一起回滚"
+    );
+    let keys: i64 = conn
+        .query_row("SELECT COUNT(*) FROM shared_api_keys", [], |r| r.get(0))
+        .expect("pool preserved");
+    assert_eq!(keys, 1, "用户池不得被清理或覆盖");
+}
+
+#[test]
+fn v18_repair_skips_marker_for_partial_schema_fixture() {
+    // 上游迁移单测会构造没有 providers 表的部分 schema：可以补结构，但不能写 marker，
+    // 否则该库会永久跳过后续的池初始化。
+    let conn = Connection::open_in_memory().expect("open db");
+    conn.execute_batch(
+        "CREATE TABLE session_log_sync (
+            file_path TEXT PRIMARY KEY,
+            last_modified INTEGER NOT NULL,
+            last_line_offset INTEGER NOT NULL DEFAULT 0,
+            last_synced_at INTEGER NOT NULL
+         );
+         CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);",
+    )
+    .expect("create partial schema");
+    Database::set_user_version(&conn, 17).expect("set user_version=17");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate partial schema");
+
+    assert_eq!(Database::get_user_version(&conn).expect("version"), 18);
+    assert!(sync_table_has_byte_cursor_columns(&conn));
+    assert!(
+        !Database::shared_key_pool_marker_present(&conn).expect("marker"),
+        "没有 providers 表时不得盖章"
+    );
+
+    // 之后补齐 providers 表，下一次启动仍应完成池初始化并盖章。
+    Database::create_tables_on_conn(&conn).expect("complete schema");
+    Database::apply_schema_migrations_on_conn(&conn).expect("second pass");
+    assert!(
+        Database::shared_key_pool_marker_present(&conn).expect("marker"),
+        "补齐 providers 后必须继续执行数据迁移并盖章"
+    );
+}
+
+#[test]
+fn v18_repair_preserves_non_text_provider_configs() {
+    let conn = Connection::open_in_memory().expect("open db");
+    make_official_v17_like(&conn);
+    conn.execute_batch(
+        "INSERT INTO providers (id, app_type, name, settings_config, meta)
+         VALUES ('blob', 'claude', 'B', x'00ff01', '{}');",
+    )
+    .expect("seed blob config");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate with blob row");
+
+    let value_type: String = conn
+        .query_row(
+            "SELECT typeof(settings_config) FROM providers WHERE id = 'blob'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("typeof");
+    assert_eq!(value_type, "blob", "非 TEXT 配置必须原样保留");
+    let blob: Vec<u8> = conn
+        .query_row(
+            "SELECT settings_config FROM providers WHERE id = 'blob'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("blob value");
+    assert_eq!(blob, vec![0x00, 0xff, 0x01]);
+}
+
+#[test]
+fn v18_repair_detection_and_backup_gate() {
+    // 结构探测 + 备份门禁的纯判定：有用户表的存量库在需要改写前必须先备份。
+    assert_eq!(Database::safety_backup_reason(17, 18, false, true, false), None);
+    assert_eq!(
+        Database::safety_backup_reason(17, 18, true, true, false).as_deref(),
+        Some("v17 → v18")
+    );
+    assert_eq!(
+        Database::safety_backup_reason(18, 18, true, false, true).as_deref(),
+        Some("v18 结构修复")
+    );
+    assert_eq!(Database::safety_backup_reason(18, 18, true, false, false), None);
+
+    // 缺字节游标列的盖章 v18 库必须被判定为「需要修复」。
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create schema");
+    conn.execute_batch(
+        "DROP TABLE session_log_sync;
+         CREATE TABLE session_log_sync (
+            file_path TEXT PRIMARY KEY,
+            last_modified INTEGER NOT NULL,
+            last_line_offset INTEGER NOT NULL DEFAULT 0,
+            last_synced_at INTEGER NOT NULL
+         );
+         INSERT OR REPLACE INTO settings (key, value)
+         VALUES ('shared_key_pool_migrated_v18', 'true');
+         CREATE TABLE shared_key_groups (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL DEFAULT 0);
+         CREATE TABLE shared_api_keys (
+            id TEXT PRIMARY KEY, group_id TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
+            key_value TEXT NOT NULL, sort_index INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(group_id, key_value)
+         );
+         CREATE TABLE provider_shared_key_links (
+            provider_id TEXT NOT NULL, app_type TEXT NOT NULL, group_id TEXT NOT NULL,
+            PRIMARY KEY (provider_id, app_type)
+         );",
+    )
+    .expect("seed stamped v18 missing cursor columns");
+    assert!(
+        Database::schema_needs_v18_repair(&conn).expect("detect repair"),
+        "缺字节游标列的 v18 库必须被识别为需要等版本修复"
+    );
+
+    // 结构完整且已盖章时不触发修复，也不需要备份。
+    let done = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&done).expect("create schema");
+    Database::apply_schema_migrations_on_conn(&done).expect("migrate");
+    assert!(
+        !Database::schema_needs_v18_repair(&done).expect("detect repair"),
+        "完整且带 marker 的库不应每次启动都触发备份与修复"
+    );
+}
+
+#[test]
+fn v18_repair_sql_round_trip_keeps_marker_and_pool() {
+    let db = Database::memory().expect("memory db");
+    {
+        let conn = lock_conn!(db.conn);
+        conn.execute_batch(
+            "INSERT INTO shared_key_groups (id, created_at) VALUES ('gs', 3);
+             INSERT INTO shared_api_keys (id, group_id, label, key_value, sort_index)
+             VALUES ('ks', 'gs', 'roundtrip', 'sk-roundtrip', 0);
+             INSERT INTO providers (id, app_type, name, settings_config, meta)
+             VALUES ('ps', 'codex', 'PS', '{\"auth\":{}}', '{\"selectedKeyId\":\"ks\"}');
+             INSERT INTO provider_shared_key_links (provider_id, app_type, group_id)
+             VALUES ('ps', 'codex', 'gs');",
+        )
+        .expect("seed pool");
+        Database::apply_schema_migrations_on_conn(&conn).expect("stamp marker");
+        assert!(Database::shared_key_pool_marker_present(&conn).expect("marker"));
+    }
+
+    let exported = db.export_sql_string_for_sync().expect("export sql");
+    assert!(exported.contains("shared_api_keys"));
+    assert!(exported.contains("shared_key_pool_migrated_v18"));
+
+    // 源库导出后保持不变，导入到一个独立主库后再校验 marker 与池一起往返。
+    db.import_sql_string(&exported).expect("import sql");
+
+    let conn = lock_conn!(db.conn);
+    assert!(
+        Database::shared_key_pool_marker_present(&conn).expect("marker after import"),
+        "marker 随 settings 一起往返，导入后不得丢失"
+    );
+    let key: String = conn
+        .query_row(
+            "SELECT key_value FROM shared_api_keys WHERE id = 'ks'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("pool key after import");
+    assert_eq!(key, "sk-roundtrip");
+    assert!(Database::table_exists(&conn, "session_log_sync").expect("table"));
+}
+
+#[test]
+fn v18_repair_rejects_future_version_before_writing() {
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create schema");
+    conn.execute_batch(
+        "DROP TABLE session_log_sync;
+         CREATE TABLE session_log_sync (
+            file_path TEXT PRIMARY KEY,
+            last_modified INTEGER NOT NULL,
+            last_line_offset INTEGER NOT NULL DEFAULT 0,
+            last_synced_at INTEGER NOT NULL
+         );",
+    )
+    .expect("downgrade structure");
+    Database::set_user_version(&conn, 19).expect("set future version");
+
+    let error = Database::apply_schema_migrations_on_conn(&conn)
+        .expect_err("version > SCHEMA_VERSION 必须拒绝");
+    assert!(error.to_string().contains("版本过新"), "错误信息: {error}");
+    assert!(
+        !sync_table_has_byte_cursor_columns(&conn),
+        "版本过新时不得执行任何结构修复"
     );
 }
