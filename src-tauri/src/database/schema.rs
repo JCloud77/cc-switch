@@ -23,8 +23,8 @@ impl Database {
     }
 
     /// 幂等创建 Claude/Codex 跨应用中央 Key 池表。
-    /// 启动建表与 v16 -> v17 迁移共用，避免部分旧 schema 缺表。
-    fn create_shared_key_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
+    /// 启动建表、v17 -> v18 迁移与迁移矩阵测试共用，避免部分旧 schema 缺表。
+    pub(crate) fn create_shared_key_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS shared_key_groups (
                 id TEXT PRIMARY KEY,
