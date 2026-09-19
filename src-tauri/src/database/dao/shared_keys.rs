@@ -1,4 +1,4 @@
-use crate::database::Database;
+use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::provider::{ApiKeyEntry, Provider, ProviderMeta};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};

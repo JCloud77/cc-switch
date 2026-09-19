@@ -5,7 +5,7 @@
 use super::{lock_conn, Database, SCHEMA_VERSION};
 use crate::error::AppError;
 use crate::provider::ProviderMeta;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashSet;
 
@@ -4047,7 +4047,7 @@ impl Database {
 
 /// `shared_key_pool_migrated_v18` 标记的三态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SharedKeyPoolMarker {
+pub(crate) enum SharedKeyPoolMarker {
     /// `settings` 表或标记行不存在。
     Absent,
     /// 标记为假（尚未完成迁移）。
@@ -4058,7 +4058,7 @@ enum SharedKeyPoolMarker {
 
 /// 共享 Key 池的迁移状态分类。
 #[derive(Debug)]
-enum SharedKeyPoolState {
+pub(crate) enum SharedKeyPoolState {
     CompleteWithMarker,
     CompleteWithoutMarker,
     LegacyUninitialized,
