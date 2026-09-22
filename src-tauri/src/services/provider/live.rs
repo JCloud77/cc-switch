@@ -2487,7 +2487,7 @@ mod tests {
             .expect("add provider");
 
         // 跨应用共享确实建立：两张卡必须落在同一个池分组里。
-        let group_of = |provider_id: &str, app_type: &str| -> String {
+        let group_of = |provider_id: &str, app_type: &str| -> Result<String, AppError> {
             let conn = crate::database::lock_conn!(db.conn);
             conn.query_row(
                 "SELECT group_id FROM provider_shared_key_links
@@ -2495,11 +2495,11 @@ mod tests {
                 rusqlite::params![provider_id, app_type],
                 |row| row.get(0),
             )
-            .expect("linked group")
+            .map_err(|e| AppError::Database(e.to_string()))
         };
         assert_eq!(
-            group_of("codex-card", "codex"),
-            group_of("claude-card", "claude"),
+            group_of("codex-card", "codex")?,
+            group_of("claude-card", "claude")?,
             "同域名的 Claude/Codex 卡片必须共享同一个池分组"
         );
 
