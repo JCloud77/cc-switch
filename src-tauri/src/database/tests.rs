@@ -2053,3 +2053,133 @@ fn v18_repair_rejects_future_version_before_writing() {
         "版本过新时不得执行任何结构修复"
     );
 }
+
+#[test]
+fn init_gate_rejects_partial_db_missing_core_tables() {
+    // 全新空库（一张表都没有）：本来就是待初始化，门禁放行。
+    let fresh = Connection::open_in_memory().expect("open db");
+    Database::ensure_core_tables_before_write(&fresh).expect("全新空库必须放行");
+
+    // 只有 settings 的残缺库：必须在建表之前拒绝，否则 providers 会被补成空表、
+    // 启动路径再也看不到核心数据缺失。
+    let partial = Connection::open_in_memory().expect("open db");
+    partial
+        .execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('shared_key_pool_migrated_v18', 'true');",
+        )
+        .expect("seed partial db");
+    let error = Database::ensure_core_tables_before_write(&partial)
+        .expect_err("缺核心表的存量库必须拒绝");
+    assert!(
+        error.to_string().contains("缺少核心表 providers"),
+        "错误信息: {error}"
+    );
+    assert!(
+        !Database::table_exists(&partial, "providers").expect("probe"),
+        "门禁必须是只读的，不得补建 providers"
+    );
+
+    // 结构完整的库：放行。
+    let complete = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&complete).expect("create schema");
+    Database::ensure_core_tables_before_write(&complete).expect("结构完整必须放行");
+}
+
+#[test]
+fn init_gate_rejects_pool_marker_without_pool_tables() {
+    // 官方 v17 形态：没有 marker、也没有池表，属于首次迁移——必须放行由迁移建表。
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create schema");
+    for table in [
+        "shared_api_keys",
+        "shared_key_groups",
+        "provider_shared_key_links",
+    ] {
+        conn.execute(&format!("DROP TABLE {table}"), [])
+            .expect("drop pool table");
+    }
+    Database::ensure_v18_pool_marker_consistent_with_raw_state(&conn)
+        .expect("无标记时缺池表属于首次迁移，必须放行");
+
+    // 盖章过 v18、池表却不见了：矛盾必须在任何建表之前拒绝，不得补空表掩盖损坏。
+    conn.execute_batch(
+        "INSERT OR REPLACE INTO settings (key, value)
+         VALUES ('shared_key_pool_migrated_v18', 'true');",
+    )
+    .expect("stamp marker");
+    let error = Database::ensure_v18_pool_marker_consistent_with_raw_state(&conn)
+        .expect_err("标记已完成却缺池表必须拒绝");
+    assert!(
+        error.to_string().contains("池表或必需列缺失"),
+        "错误信息: {error}"
+    );
+    assert!(
+        !Database::table_exists(&conn, "shared_key_groups").expect("probe"),
+        "矛盾探测必须是只读的，不得补建池表"
+    );
+}
+
+#[test]
+fn migration_backup_gate_covers_zero_version_with_existing_data() {
+    // version=0 但已有用户表：迁移链会从 v0 逐级改写存量数据，必须落在备份门禁内。
+    assert!(Database::needs_migration_backup(0, 18, true));
+    // 真正的全新空库（无任何用户表）：不备份。
+    assert!(!Database::needs_migration_backup(0, 18, false));
+    assert!(Database::needs_migration_backup(17, 18, true));
+    // 等版本（无版本迁移）时由结构修复门禁决定，不在这里重复备份。
+    assert!(!Database::needs_migration_backup(18, 18, true));
+
+    assert_eq!(
+        Database::safety_backup_reason(
+            0,
+            18,
+            true,
+            Database::needs_migration_backup(0, 18, true),
+            false
+        ),
+        Some("v0 → v18".to_string())
+    );
+    assert_eq!(
+        Database::safety_backup_reason(
+            0,
+            18,
+            false,
+            Database::needs_migration_backup(0, 18, false),
+            false
+        ),
+        None
+    );
+}
+
+#[test]
+fn v18_repair_keeps_emptied_pool_with_marker_instead_of_reseeding() {
+    let conn = Connection::open_in_memory().expect("open db");
+    Database::create_tables_on_conn(&conn).expect("create schema");
+    // 用户清空过池（三张池表都空）且标记仍在；卡片 meta 里还留着旧 Key 列表。
+    conn.execute_batch(
+        r#"INSERT INTO providers (id, app_type, name, settings_config, meta)
+           VALUES ('p30', 'claude', 'P30',
+                   '{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-residual"}}',
+                   '{"apiKeys":[{"id":"k30","label":"","key":"sk-residual"}],"selectedKeyId":"k30"}');
+           INSERT OR REPLACE INTO settings (key, value)
+           VALUES ('shared_key_pool_migrated_v18', 'true');"#,
+    )
+    .expect("seed emptied pool with marker");
+    Database::set_user_version(&conn, 18).expect("set user_version=18");
+
+    assert!(
+        !Database::schema_needs_v18_repair(&conn).expect("detect repair"),
+        "「标记已完成 + 空池」是既定状态，不应每次启动都触发备份与修复"
+    );
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("must not reseed");
+
+    let keys: i64 = conn
+        .query_row("SELECT COUNT(*) FROM shared_api_keys", [], |r| r.get(0))
+        .expect("count pool keys");
+    assert_eq!(
+        keys, 0,
+        "标记已完成时空池必须保持为空，不得按卡片残留 meta 复活用户已删除的 Key"
+    );
+}

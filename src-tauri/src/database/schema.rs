@@ -1674,7 +1674,8 @@ impl Database {
         Self::create_shared_key_tables_on_conn(conn)?;
 
         match Self::classify_shared_key_pool_state(conn)? {
-            // 已迁移且结构完整：不写池数据、不重写 provider meta。
+            // 已迁移且无需任何写入：不写池数据、不重写 provider meta。**包含「标记已完成但
+            // 池为空」**——那是用户自己清空过池的既定状态，绝不能按卡片残留 meta 重迁一遍。
             SharedKeyPoolState::CompleteWithMarker => {}
             // 池完整、数据自洽、只是缺 marker：只补 marker，逐值保留 Key、label、
             // sort_index、分组、关联与 provider 原始 meta。已有中央池数据时不得依
@@ -1842,8 +1843,11 @@ impl Database {
 
     /// 只读探测：marker 与「原始池结构」矛盾时直接拒绝。
     ///
-    /// 必须在 `create_shared_key_tables_on_conn` 之前调用，否则补出来的空表会掩盖损坏。
-    fn ensure_v18_pool_marker_consistent_with_raw_state(conn: &Connection) -> Result<(), AppError> {
+    /// 必须在任何 `create_shared_key_tables_on_conn` 之前调用（`Database::init` 的只读门禁
+    /// 就是唯一入口），否则补出来的空表会永久掩盖损坏。
+    pub(crate) fn ensure_v18_pool_marker_consistent_with_raw_state(
+        conn: &Connection,
+    ) -> Result<(), AppError> {
         if Self::shared_key_pool_columns_present(conn)? {
             return Ok(());
         }
@@ -1882,9 +1886,16 @@ impl Database {
             return Ok(SharedKeyPoolState::LegacyUninitialized);
         }
 
-        // 池无任何行：未初始化（中断态的空表、或清理后的空池）都按可安全初始化处理。
+        // 池无任何行：有完成标记说明迁移确实跑过一次，空池就是用户当前状态（他自己清空过），
+        // 不得按「未初始化」再迁一遍——那会拿卡片残留 meta 复活用户已删除的 Key。
+        // 没有标记才是真正的中断态空表，可以安全初始化。
         if !Self::shared_key_pool_has_core_rows(conn)? {
-            return Ok(SharedKeyPoolState::LegacyUninitialized);
+            return Ok(match marker {
+                SharedKeyPoolMarker::Done => SharedKeyPoolState::CompleteWithMarker,
+                SharedKeyPoolMarker::Absent | SharedKeyPoolMarker::Pending => {
+                    SharedKeyPoolState::LegacyUninitialized
+                }
+            });
         }
 
         // 关联必须指向真实分组。
@@ -4013,9 +4024,14 @@ pub(crate) enum SharedKeyPoolMarker {
 /// 共享 Key 池的迁移状态分类。
 #[derive(Debug)]
 pub(crate) enum SharedKeyPoolState {
+    /// 已完成迁移且无需任何写入。**也包含「标记已完成但池为空」**——那是用户自己清空过，
+    /// 属于既定状态而不是待初始化态，绝不能重迁。
     CompleteWithMarker,
+    /// 结构自洽但缺标记：只补标记，不重建、不复活已删除的 Key。
     CompleteWithoutMarker,
+    /// 未初始化：可安全执行首次迁移。
     LegacyUninitialized,
+    /// 结构性矛盾：必须报错，禁止自动重建。
     Inconsistent(String),
 }
 

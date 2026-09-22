@@ -140,7 +140,11 @@ impl Database {
                 )));
             }
             let has_user_tables = Self::has_user_tables(&conn)?;
-            let needs_migration = version > 0 && version < SCHEMA_VERSION;
+            // 存量残缺库门禁 + 池迁移标记与原始池结构的矛盾判定，都必须在建表之前完成。
+            Self::ensure_core_tables_before_write(&conn)?;
+            Self::ensure_v18_pool_marker_consistent_with_raw_state(&conn)?;
+            let needs_migration =
+                Self::needs_migration_backup(version, SCHEMA_VERSION, has_user_tables);
             let needs_v18_repair = Self::schema_needs_v18_repair(&conn)?;
             Self::safety_backup_reason(
                 version,
@@ -222,6 +226,38 @@ impl Database {
         None
     }
 
+    /// 建表前的核心表门禁。
+    ///
+    /// 「有用户表但没有 core 表 providers」= 存量残缺库（表被外部工具删掉、或从半截备份恢复）。
+    /// 这种库必须在 `create_tables` 之前拒绝：建表会把 providers 补成空表，之后启动路径再也
+    /// 看不到数据缺失，用户会在「一切正常」的假象里丢掉全部供应商配置。
+    ///
+    /// 全新空库（一张表都没有）不在此列，它本来就是待初始化的。
+    pub(crate) fn ensure_core_tables_before_write(conn: &Connection) -> Result<(), AppError> {
+        if !Self::has_user_tables(conn)? {
+            return Ok(());
+        }
+        if Self::table_exists(conn, "providers")? {
+            return Ok(());
+        }
+        Err(AppError::Database(
+            "数据库存在用户表但缺少核心表 providers；已停止建表与迁移以免用空表掩盖数据缺失，请从备份恢复该数据库"
+                .to_string(),
+        ))
+    }
+
+    /// 是否需要「低版本迁移」备份。
+    ///
+    /// `version == 0` 但库里已有用户表同样是即将被改写的存量数据——迁移链会从 v0 逐级跑到
+    /// 当前版本，不能因为版本号是 0 就当成新库跳过备份。
+    pub(crate) fn needs_migration_backup(
+        version: i32,
+        schema_version: i32,
+        has_user_tables: bool,
+    ) -> bool {
+        version < schema_version && (version > 0 || has_user_tables)
+    }
+
     /// 只读探测：v18 结构是否缺失，需要「等版本修复」。
     ///
     /// 覆盖缺 `session_log_sync` 表、缺字节游标列、缺去重账本、缺共享 Key 池
@@ -231,8 +267,8 @@ impl Database {
         if !Self::has_user_tables(conn)? {
             return Ok(false);
         }
-        // 核心表缺失（例如只有 settings 的残缺库）交由既有导入校验/迁移报错处理，
-        // 这里不把它当成 v18 修复项，避免在坏库上写入 marker。
+        // 核心表缺失（例如只有 settings 的残缺库）：`init` 的只读门禁会直接拒绝启动，
+        // 这里保持「不视为 v18 修复项」，避免在任何坏库上写入 marker。
         if !Self::table_exists(conn, "providers")? {
             return Ok(false);
         }

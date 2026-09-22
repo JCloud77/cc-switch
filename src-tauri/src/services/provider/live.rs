@@ -2432,50 +2432,40 @@ mod tests {
         let db = std::sync::Arc::new(Database::memory().expect("memory db"));
         let state = crate::store::AppState::new(db.clone());
 
-        // 池中已有 "sk-shared"：新卡片提交同一 Key 值但用不同 id，保存时会被合并去重，
-        // 选中 id 随之重映射——live 写入必须使用重读后的归一化 provider。
-        let seed = {
+        // Codex 卡先占住 vendor.example，池里已经有 "sk-vendor"。
+        let codex = {
             let mut provider = Provider::with_id(
-                "seed".to_string(),
-                "Seed".to_string(),
-                json!({"env": {"ANTHROPIC_BASE_URL": "https://shared.example"}}),
+                "codex-card".to_string(),
+                "Vendor Codex".to_string(),
+                json!({
+                    "auth": {"OPENAI_API_KEY": "sk-vendor"},
+                    "config": "[model_providers.vendor]\nname = \"vendor\"\nbase_url = \"https://shared.vendor.example/v1\"\nwire_api = \"responses\"\n"
+                }),
                 None,
             );
             provider.meta = Some(ProviderMeta {
                 api_keys: vec![ApiKeyEntry {
-                    id: "old-id".to_string(),
+                    id: "codex-key".to_string(),
                     label: String::new(),
-                    key: "sk-shared".to_string(),
-                    strategy: Some("claude_auth".to_string()),
+                    key: "sk-vendor".to_string(),
+                    strategy: Some("bearer".to_string()),
                 }],
-                selected_key_id: Some("old-id".to_string()),
+                selected_key_id: Some("codex-key".to_string()),
                 ..ProviderMeta::default()
             });
             provider
         };
-        db.save_provider("claude", &seed).expect("seed pool");
-        let pool_key_id: String = {
-            let conn = crate::database::lock_conn!(db.conn);
-            conn.query_row(
-                "SELECT id FROM shared_api_keys WHERE key_value = 'sk-shared'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("pool key id")
-        };
-        assert!(
-            !pool_key_id.is_empty(),
-            "首次保存必须把 Key 收进中央池（池条目沿用卡片里的条目 id，不做重编号）"
-        );
+        db.save_provider("codex", &codex).expect("seed codex pool");
 
-        // 新卡片：同一 Key 值、另一个请求 id。add_to_live=false，仅验证保存归一化。
+        // Claude 卡同域名、同 Key 值，但前端给的是另一个条目 id；配置里刻意留一个**不同**的
+        // 旧 Key，用来区分「真的物化出了池 Key」和「只是把配置原样带出去」。
         let incoming = {
             let mut provider = Provider::with_id(
-                "incoming".to_string(),
-                "Incoming".to_string(),
+                "claude-card".to_string(),
+                "Vendor Claude".to_string(),
                 json!({"env": {
-                    "ANTHROPIC_BASE_URL": "https://incoming.example",
-                    "ANTHROPIC_AUTH_TOKEN": "sk-shared"
+                    "ANTHROPIC_BASE_URL": "https://shared.vendor.example",
+                    "ANTHROPIC_AUTH_TOKEN": "sk-stale"
                 }}),
                 None,
             );
@@ -2483,7 +2473,7 @@ mod tests {
                 api_keys: vec![ApiKeyEntry {
                     id: "request-id".to_string(),
                     label: String::new(),
-                    key: "sk-shared".to_string(),
+                    key: "sk-vendor".to_string(),
                     strategy: Some("claude_auth".to_string()),
                 }],
                 selected_key_id: Some("request-id".to_string()),
@@ -2491,23 +2481,58 @@ mod tests {
             });
             provider
         };
+        let request_snapshot = incoming.clone();
+
         super::super::ProviderService::add(&state, AppType::Claude, incoming, false)
             .expect("add provider");
 
+        // 跨应用共享确实建立：两张卡必须落在同一个池分组里。
+        let group_of = |provider_id: &str, app_type: &str| -> String {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.query_row(
+                "SELECT group_id FROM provider_shared_key_links
+                 WHERE provider_id = ?1 AND app_type = ?2",
+                rusqlite::params![provider_id, app_type],
+                |row| row.get(0),
+            )
+            .expect("linked group")
+        };
+        assert_eq!(
+            group_of("codex-card", "codex"),
+            group_of("claude-card", "claude"),
+            "同域名的 Claude/Codex 卡片必须共享同一个池分组"
+        );
+
+        // 前端给的 request-id 进不了池（同值条目已由 Codex 卡建立），保存必须把它重映射到
+        // 池中持有同一个 Key 值的真实条目。
         let stored = db
-            .get_provider_by_id("incoming", "claude")
+            .get_provider_by_id("claude-card", "claude")
             .expect("read stored")
             .expect("provider stored");
         let selected = stored
             .meta
             .as_ref()
-            .and_then(|meta| meta.selected_key_id.clone());
-        assert!(
-            selected.is_some(),
-            "保存后的卡片仍必须保留一个选中 Key: {selected:?}"
+            .and_then(|meta| meta.selected_key_id.clone())
+            .expect("selected key after save");
+        assert_ne!(
+            selected, "request-id",
+            "前端条目 id 未进池，选中 id 必须被重映射"
+        );
+        let selected_value: String = {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.query_row(
+                "SELECT key_value FROM shared_api_keys WHERE id = ?1",
+                rusqlite::params![selected],
+                |row| row.get(0),
+            )
+            .expect("selected key row")
+        };
+        assert_eq!(
+            selected_value, "sk-vendor",
+            "重映射后的池条目必须持有同一个 Key 值"
         );
 
-        // 归一化后的 provider 在 live 物化时解析出池 Key，而不是请求里的陈旧 id。
+        // 归一化后的 provider 物化出池 Key，而不是配置里那个旧值。
         let effective = build_effective_settings_with_common_config(
             state.db.as_ref(),
             &AppType::Claude,
@@ -2516,8 +2541,22 @@ mod tests {
         .expect("effective settings");
         assert_eq!(
             effective["env"]["ANTHROPIC_AUTH_TOKEN"],
-            json!("sk-shared"),
-            "重读后的 provider 必须能物化出池中 Key"
+            json!("sk-vendor"),
+            "重读后的 provider 必须物化出池中 Key"
+        );
+
+        // 反证 reload 的必要性：请求快照的选中 id 解析不到池条目，物化拿不到池 Key，只会把
+        // 配置里的旧值原样带出去——这正是 add/update 之后必须重读 provider 的原因。
+        let stale = build_effective_settings_with_common_config(
+            state.db.as_ref(),
+            &AppType::Claude,
+            &request_snapshot,
+        )
+        .expect("stale effective settings");
+        assert_eq!(
+            stale["env"]["ANTHROPIC_AUTH_TOKEN"],
+            json!("sk-stale"),
+            "未重读的请求对象物化不出池 Key，live 写入只能拿到旧值"
         );
         Ok(())
     }
