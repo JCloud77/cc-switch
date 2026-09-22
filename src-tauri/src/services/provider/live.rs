@@ -2545,18 +2545,32 @@ mod tests {
             "重读后的 provider 必须物化出池中 Key"
         );
 
-        // 反证 reload 的必要性：请求快照的选中 id 解析不到池条目，物化拿不到池 Key，只会把
-        // 配置里的旧值原样带出去——这正是 add/update 之后必须重读 provider 的原因。
-        let stale = build_effective_settings_with_common_config(
+        // 未重读的请求对象：它带着「未进池的 request-id」，但 hydrate 的同值重映射会在
+        // 构建 effective settings 时把它找回池条目，所以这里同样拿到池 Key——这是 hydrate
+        // 那道防线的价值，两道防线共同保证 live 写入不会拿到旧值。
+        let snapshot_effective = build_effective_settings_with_common_config(
             state.db.as_ref(),
             &AppType::Claude,
             &request_snapshot,
         )
-        .expect("stale effective settings");
+        .expect("snapshot effective settings");
         assert_eq!(
-            stale["env"]["ANTHROPIC_AUTH_TOKEN"],
-            json!("sk-stale"),
-            "未重读的请求对象物化不出池 Key，live 写入只能拿到旧值"
+            snapshot_effective["env"]["ANTHROPIC_AUTH_TOKEN"],
+            json!("sk-vendor"),
+            "请求快照的失效选中 id 必须由 hydrate 的同值重映射找回池 Key"
+        );
+
+        // 但请求对象自身仍带着陈旧 id：只有重读数据库才能拿到归一化后的 provider，
+        // 这正是 add/update 之后必须 reload 的原因——不经过 live 构建的消费路径
+        // （备份写入、代理读写、前端回读）不会替调用点做这层归一化。
+        let snapshot_selected = request_snapshot
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.selected_key_id.as_deref());
+        assert_eq!(
+            snapshot_selected,
+            Some("request-id"),
+            "请求对象本身带着未归一化的选中 id，必须靠 reload 才能统一各消费路径"
         );
         Ok(())
     }
