@@ -3485,7 +3485,7 @@ mod tests {
             )?;
         }
 
-        let backup_dir = get_app_config_dir().join("backups");
+        let backup_dir = crate::config::get_app_config_dir().join("backups");
         std::fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
         let backup_path = backup_dir.join("missing-pool.db");
         {
