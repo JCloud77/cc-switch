@@ -2069,8 +2069,8 @@ fn init_gate_rejects_partial_db_missing_core_tables() {
              INSERT INTO settings (key, value) VALUES ('shared_key_pool_migrated_v18', 'true');",
         )
         .expect("seed partial db");
-    let error = Database::ensure_core_tables_before_write(&partial)
-        .expect_err("缺核心表的存量库必须拒绝");
+    let error =
+        Database::ensure_core_tables_before_write(&partial).expect_err("缺核心表的存量库必须拒绝");
     assert!(
         error.to_string().contains("缺少核心表 providers"),
         "错误信息: {error}"
