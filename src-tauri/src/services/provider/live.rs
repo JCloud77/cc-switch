@@ -2396,6 +2396,8 @@ mod tests {
     use super::*;
     use crate::provider::{ApiKeyEntry, AuthBinding, AuthBindingSource, ProviderMeta};
     use serde_json::json;
+    // 进程级 HOME 覆盖必须与其他改动环境变量的测试互斥。
+    use serial_test::serial;
 
     /// 进程级 HOME 隔离：`ProviderService::add/update` 会进入 live 写入路径，必须确保
     /// 测试不会碰到真实用户配置目录。并行测试共享环境变量，这里只覆盖需要它的用例。
@@ -2426,6 +2428,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn shared_keys_save_normalizes_selection_before_live_write(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let _home = TestHome::new();
@@ -2571,6 +2574,19 @@ mod tests {
             snapshot_selected,
             Some("request-id"),
             "请求对象本身带着未归一化的选中 id，必须靠 reload 才能统一各消费路径"
+        );
+
+        // 落盘断言：库里没有当前供应商时，add 会把这张卡设为当前并写出 Claude 的 live
+        // settings.json（与 `add_to_live` 参数无关，那条分支只对 additive 应用生效）。
+        // 断言实际文件内容，才能把「物化正确」升级为「service 最终落盘正确」。
+        let live_path = crate::config::get_claude_settings_path();
+        let raw = std::fs::read_to_string(&live_path)
+            .unwrap_or_else(|e| panic!("必须写出 Claude live 配置 {}: {e}", live_path.display()));
+        let live: serde_json::Value = serde_json::from_str(&raw).expect("live settings 必须是 JSON");
+        assert_eq!(
+            live["env"]["ANTHROPIC_AUTH_TOKEN"],
+            json!("sk-vendor"),
+            "落盘的 live 配置必须使用池 Key，而不是请求里那个旧值"
         );
         Ok(())
     }

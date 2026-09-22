@@ -218,6 +218,10 @@ impl Database {
         // Validate the schema produced by the input itself before migrations
         // can create missing tables and accidentally make a truncated file look valid.
         Self::validate_imported_schema(&temp_conn)?;
+        // 共享池是同一个坑的第二处入口：create_tables_on_conn 会补出空池表，之后
+        // apply_schema_migrations_on_conn 里的矛盾检查就再也看不到「标记已完成却缺池表」。
+        // 这里同样必须在建表之前判定，否则一份被裁剪过的备份会被当成正常备份换进主库。
+        Self::ensure_v18_pool_marker_consistent_with_raw_state(&temp_conn)?;
 
         // 补齐缺失表/索引并执行迁移
         Self::create_tables_on_conn(&temp_conn)?;
@@ -1079,6 +1083,9 @@ impl Database {
 
         Self::validate_sqlite_integrity(&staging_conn)?;
         Self::validate_imported_schema(&staging_conn)?;
+        // 与 SQL 导入同源的门禁：恢复一份缺池表却带着完成标记的库，同样必须在
+        // create_tables_on_conn 补出空池表之前拒绝。
+        Self::ensure_v18_pool_marker_consistent_with_raw_state(&staging_conn)?;
         Self::ensure_incremental_auto_vacuum_on_conn(&staging_conn)?;
         Self::create_tables_on_conn(&staging_conn)?;
         Self::apply_schema_migrations_on_conn(&staging_conn)?;
@@ -3370,6 +3377,164 @@ mod tests {
             t.elapsed()
         );
 
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn import_rejects_sql_backup_missing_shared_key_pool() -> Result<(), AppError> {
+        let _test_home = TestHomeGuard::new();
+        // 被裁剪过的备份：七张基础表与「完成」标记都在，共享池三张表整组缺失。
+        // 判定必须在 create_tables_on_conn 补出空池表之前，否则这份备份会被当成正常备份。
+        let source = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(source.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('px', 'claude', 'P-X', '{}', '{}')",
+                [],
+            )?;
+            for table in [
+                "provider_shared_key_links",
+                "shared_api_keys",
+                "shared_key_groups",
+            ] {
+                conn.execute(&format!("DROP TABLE {table}"), [])?;
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value)
+                 VALUES ('shared_key_pool_migrated_v18', 'true')",
+                [],
+            )?;
+        }
+        let exported = source.export_sql_string()?;
+
+        let target = Database::memory()?;
+        let error = target
+            .import_sql_string(&exported)
+            .expect_err("缺共享池却带完成标记的备份必须被拒绝");
+        assert!(
+            error.to_string().contains("标记共享 Key 池迁移已完成"),
+            "错误信息应定位到共享池: {error}"
+        );
+        let providers: i64 = {
+            let conn = crate::database::lock_conn!(target.conn);
+            conn.query_row("SELECT COUNT(*) FROM providers", [], |row| row.get(0))?
+        };
+        assert_eq!(providers, 0, "被拒绝的导入不得改动主库");
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn import_still_accepts_backup_without_any_shared_key_pool() -> Result<(), AppError> {
+        let _test_home = TestHomeGuard::new();
+        // 防误伤：共享池是本地功能，官方 v17/v18 备份里根本没有这三张表，也没有标记。
+        // 这种备份必须照旧可导入，由迁移建表并完成初始化。
+        let source = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(source.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('po', 'claude', 'P-Official', '{}', '{}')",
+                [],
+            )?;
+            for table in [
+                "provider_shared_key_links",
+                "shared_api_keys",
+                "shared_key_groups",
+            ] {
+                conn.execute(&format!("DROP TABLE {table}"), [])?;
+            }
+            conn.execute(
+                "DELETE FROM settings WHERE key = 'shared_key_pool_migrated_v18'",
+                [],
+            )?;
+        }
+        let exported = source.export_sql_string()?;
+
+        let target = Database::memory()?;
+        target
+            .import_sql_string(&exported)
+            .expect("没有共享池的官方旧备份必须继续可导入");
+        let conn = crate::database::lock_conn!(target.conn);
+        let name: String = conn.query_row("SELECT name FROM providers WHERE id = 'po'", [], |row| {
+            row.get(0)
+        })?;
+        assert_eq!(name, "P-Official");
+        assert!(
+            Database::table_exists(&conn, "shared_key_groups")?,
+            "导入后必须由迁移补出共享池表"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn restore_rejects_db_backup_missing_shared_key_pool() -> Result<(), AppError> {
+        let _test_home = TestHomeGuard::new();
+        let db = Database::init()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute("DELETE FROM providers", [])?;
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('live-provider', 'claude', 'Live Provider', '{}', '{}')",
+                [],
+            )?;
+        }
+
+        let backup_dir = get_app_config_dir().join("backups");
+        fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
+        let backup_path = backup_dir.join("missing-pool.db");
+        {
+            let conn =
+                Connection::open(&backup_path).map_err(|e| AppError::Database(e.to_string()))?;
+            Database::create_tables_on_conn(&conn)?;
+            for table in [
+                "provider_shared_key_links",
+                "shared_api_keys",
+                "shared_key_groups",
+            ] {
+                conn.execute(&format!("DROP TABLE {table}"), [])?;
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value)
+                 VALUES ('shared_key_pool_migrated_v18', 'true')",
+                [],
+            )?;
+        }
+        let bytes_before = fs::read(&backup_path).map_err(|e| AppError::io(&backup_path, e))?;
+        let mut backups_before = Database::list_backups()?
+            .into_iter()
+            .map(|entry| entry.filename)
+            .collect::<Vec<_>>();
+        backups_before.sort();
+
+        let error = db
+            .restore_from_backup("missing-pool.db")
+            .expect_err("缺共享池却带完成标记的备份必须被拒绝");
+        assert!(
+            error.to_string().contains("标记共享 Key 池迁移已完成"),
+            "错误信息应定位到共享池: {error}"
+        );
+
+        let live_provider: String = {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.query_row("SELECT id FROM providers", [], |row| row.get(0))?
+        };
+        assert_eq!(live_provider, "live-provider", "被拒绝的恢复不得改动主库");
+        let bytes_after = fs::read(&backup_path).map_err(|e| AppError::io(&backup_path, e))?;
+        assert_eq!(bytes_after, bytes_before, "被拒绝的恢复不得改动源备份");
+        let mut backups_after = Database::list_backups()?
+            .into_iter()
+            .map(|entry| entry.filename)
+            .collect::<Vec<_>>();
+        backups_after.sort();
+        assert_eq!(
+            backups_after, backups_before,
+            "暂存失败不得留下安全备份"
+        );
         Ok(())
     }
 }
