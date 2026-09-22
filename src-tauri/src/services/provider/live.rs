@@ -2439,7 +2439,7 @@ mod tests {
                 "Vendor Codex".to_string(),
                 json!({
                     "auth": {"OPENAI_API_KEY": "sk-vendor"},
-                    "config": "[model_providers.vendor]\nname = \"vendor\"\nbase_url = \"https://shared.vendor.example/v1\"\nwire_api = \"responses\"\n"
+                    "config": "model_provider = \"vendor\"\n\n[model_providers.vendor]\nname = \"vendor\"\nbase_url = \"https://shared.vendor.example/v1\"\nwire_api = \"responses\"\n"
                 }),
                 None,
             );
