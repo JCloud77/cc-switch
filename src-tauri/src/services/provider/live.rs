@@ -2582,7 +2582,7 @@ mod tests {
         let live_path = crate::config::get_claude_settings_path();
         let raw = std::fs::read_to_string(&live_path)
             .unwrap_or_else(|e| panic!("必须写出 Claude live 配置 {}: {e}", live_path.display()));
-        let live: serde_json::Value = serde_json::from_str(&raw).expect("live settings 必须是 JSON");
+        let live: serde_json::Value = serde_json::from_str(&raw).expect("live settings JSON");
         assert_eq!(
             live["env"]["ANTHROPIC_AUTH_TOKEN"],
             json!("sk-vendor"),
