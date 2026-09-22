@@ -469,10 +469,11 @@ mod tests {
             effective["env"]["ANTHROPIC_BASE_URL"],
             serde_json::json!("https://pool.example")
         );
-        // 数据库不动：provider meta 不得被写回 Key 列表。
-        let stored = db
-            .get_provider_by_id(&id, "claude")?
-            .expect("provider still there");
+        // 数据库不动：provider 仍在，但 meta 不得被写回 Key 列表。
+        assert!(
+            db.get_provider_by_id(&id, "claude")?.is_some(),
+            "物化后 provider 仍必须存在于数据库"
+        );
         // hydrate 会按池填充内存视图（这是它的职责），所以只能查数据库原始行来判断
         // 「物化是否写回」：providers.meta 既不存 Key 列表，也不存池 Key 值。
         let raw_meta = raw_provider_meta(&db, "pooled", "claude")?;

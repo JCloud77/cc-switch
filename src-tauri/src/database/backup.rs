@@ -3505,7 +3505,8 @@ mod tests {
                 [],
             )?;
         }
-        let bytes_before = fs::read(&backup_path).map_err(|e| AppError::io(&backup_path, e))?;
+        let bytes_before =
+            std::fs::read(&backup_path).map_err(|e| AppError::io(&backup_path, e))?;
         let mut backups_before = Database::list_backups()?
             .into_iter()
             .map(|entry| entry.filename)
@@ -3525,7 +3526,8 @@ mod tests {
             conn.query_row("SELECT id FROM providers", [], |row| row.get(0))?
         };
         assert_eq!(live_provider, "live-provider", "被拒绝的恢复不得改动主库");
-        let bytes_after = fs::read(&backup_path).map_err(|e| AppError::io(&backup_path, e))?;
+        let bytes_after =
+            std::fs::read(&backup_path).map_err(|e| AppError::io(&backup_path, e))?;
         assert_eq!(bytes_after, bytes_before, "被拒绝的恢复不得改动源备份");
         let mut backups_after = Database::list_backups()?
             .into_iter()
