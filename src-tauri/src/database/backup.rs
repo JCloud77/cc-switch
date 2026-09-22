@@ -3458,9 +3458,10 @@ mod tests {
             .import_sql_string(&exported)
             .expect("没有共享池的官方旧备份必须继续可导入");
         let conn = crate::database::lock_conn!(target.conn);
-        let name: String = conn.query_row("SELECT name FROM providers WHERE id = 'po'", [], |row| {
-            row.get(0)
-        })?;
+        let name: String =
+            conn.query_row("SELECT name FROM providers WHERE id = 'po'", [], |row| {
+                row.get(0)
+            })?;
         assert_eq!(name, "P-Official");
         assert!(
             Database::table_exists(&conn, "shared_key_groups")?,
@@ -3531,10 +3532,7 @@ mod tests {
             .map(|entry| entry.filename)
             .collect::<Vec<_>>();
         backups_after.sort();
-        assert_eq!(
-            backups_after, backups_before,
-            "暂存失败不得留下安全备份"
-        );
+        assert_eq!(backups_after, backups_before, "暂存失败不得留下安全备份");
         Ok(())
     }
 }
